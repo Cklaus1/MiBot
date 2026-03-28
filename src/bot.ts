@@ -16,6 +16,7 @@ import { waitForMeetingEnd } from './meeting.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
 import { transcribe } from './transcribe.js';
 import { launchCamofox, type CamofoxPage } from './camofox.js';
+import { log } from './log.js';
 
 const RECORDINGS_DIR = path.join(os.homedir(), '.config', 'mibot', 'recordings');
 
@@ -42,7 +43,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
   if (!platform) throw new Error(`Unsupported meeting URL: ${opts.url}`);
 
   const title = opts.title || `${platform} meeting`;
-  console.error(`[mibot] Joining ${platform}: ${title}`);
+  log.info(`Joining ${platform}: ${title}`, { platform, title });
 
   // Create DB records
   const meeting = insertMeeting({
@@ -207,7 +208,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
 
       if (controlChannel) controlChannel.stop();
       controlChannel = null;
-      if (browser) await browser.close().catch(() => {});
+      await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
       browser = null;
 
       await transcribe(recording.id, audioPath, trackedParticipants, speakerTimeline);
@@ -217,15 +218,15 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     }
 
   } catch (err) {
-    console.error(`[mibot] Error: ${(err as Error).message}`);
+    log.error(`Bot error: ${(err as Error).message}`, { meetingId: meeting.id });
     updateMeetingStatus(meeting.id, 'failed');
     updateRecording(recording.id, { status: 'failed' });
     throw err;
   } finally {
     stopRecording();
     if (controlChannel) controlChannel.stop();
-    if (browser) await browser.close().catch(() => {});
-    if (camofoxPage) await camofoxPage.close().catch(() => {});
+    if (browser) await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+    if (camofoxPage) await Promise.race([camofoxPage.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
   }
 }
 
@@ -356,7 +357,7 @@ async function flushCamofoxAudio(page: CamofoxPage, outputPath: string): Promise
       return fs.statSync(outputPath).size;
     }
   } catch (err) {
-    console.error(`[mibot] WARNING: Audio flush failed — ${(err as Error).message}`);
+    log.warn(`Audio flush failed: ${(err as Error).message}`);
   }
   return fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
 }
@@ -549,7 +550,7 @@ function isSimilarBuffer(a: Buffer, b: Buffer): boolean {
   for (let i = start; i < start + len; i += step) {
     if (a[i] !== b[i]) diffCount++;
   }
-  return (diffCount / samples) < 0.02;
+  return (diffCount / samples) < 0.08;
 }
 
 /** Write metadata sidecar JSON file. */

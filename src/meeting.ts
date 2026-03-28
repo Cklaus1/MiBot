@@ -202,6 +202,7 @@ export async function waitForMeetingEnd(
   let aloneStart: number | null = null;
   let graceStart: number | null = null;
   let lastHumanCount = -1;
+  let consecutiveEmptyPolls = 0;
 
   // Track all participants and active speaker over time
   const participantMap = new Map<string, Participant>();
@@ -272,14 +273,21 @@ export async function waitForMeetingEnd(
 
     const humanCount = humans.length;
 
+    // Track consecutive empty polls to avoid premature exit on single flaky scrape
+    if (humanCount === 0 && lastHumanCount > 0) {
+      consecutiveEmptyPolls++;
+    } else if (humanCount > 0) {
+      consecutiveEmptyPolls = 0;
+    }
+
     if (humanCount !== lastHumanCount) {
       const botStr = bots.length > 0 ? ` + ${bots.length} bot(s)` : '';
       console.error(`[mibot] Participants: ${humanCount} human(s)${botStr}`);
       lastHumanCount = humanCount;
     }
 
-    // Alone timeout
-    if (humanCount <= config.minHumansToStay) {
+    // Alone timeout (require 2+ consecutive empty polls to trigger grace period)
+    if (humanCount <= config.minHumansToStay && consecutiveEmptyPolls >= 2) {
       if (!aloneStart) {
         aloneStart = Date.now();
         console.error(`[mibot] Alone (${humanCount} humans, ${bots.length} bots). Waiting ${config.aloneTimeoutMinutes}m...`);
@@ -293,8 +301,8 @@ export async function waitForMeetingEnd(
       aloneStart = null;
     }
 
-    // Grace period
-    if (humanCount === 0 && lastHumanCount > 0 && !graceStart) {
+    // Grace period (only after 2+ consecutive empty polls)
+    if (humanCount === 0 && consecutiveEmptyPolls >= 2 && !graceStart) {
       graceStart = Date.now();
       console.error(`[mibot] All humans left. Grace period: ${config.leaveGracePeriodSeconds}s...`);
     }

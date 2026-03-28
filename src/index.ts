@@ -6,6 +6,7 @@ import {
 } from './db.js';
 import { loadConfig, saveDefaultConfig, shouldSkipMeeting, fmtTime } from './config.js';
 import { sendCommand } from './control.js';
+import { log } from './log.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';

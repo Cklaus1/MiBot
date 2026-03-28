@@ -4,7 +4,7 @@ import { startRecording, stopRecording } from './recorder.js';
 import { flushAudioToDisk } from './webrtc-capture.js';
 
 let audioFlushInterval: ReturnType<typeof setInterval> | null = null;
-let flushing = false;
+let flushPromise: Promise<void> = Promise.resolve();
 
 /**
  * Start audio capture: ffmpeg recording + periodic WebRTC flush to disk.
@@ -16,14 +16,14 @@ export function startAudioCapture(page: Page, audioPath: string): string {
 
   // Periodically flush WebRTC-captured audio to disk (crash-safe)
   const webrtcAudioPath = audioPath.replace('.webm', '-webrtc.webm');
-  flushing = false;
-  audioFlushInterval = setInterval(async () => {
-    if (flushing) return;
-    flushing = true;
-    try {
-      await flushAudioToDisk(page, webrtcAudioPath);
-    } catch {}
-    flushing = false;
+  flushPromise = Promise.resolve();
+  audioFlushInterval = setInterval(() => {
+    // Chain flushes sequentially — never overlap
+    flushPromise = flushPromise.then(async () => {
+      try {
+        await flushAudioToDisk(page, webrtcAudioPath);
+      } catch {}
+    });
   }, 15000);
 
   return webrtcAudioPath;
@@ -39,7 +39,7 @@ export async function stopAudioCapture(page: Page, audioPath: string, webrtcAudi
     audioFlushInterval = null;
   }
   // Wait for any in-flight flush to complete before final flush
-  while (flushing) await new Promise(r => setTimeout(r, 100));
+  await flushPromise;
   stopRecording(); // Stop ffmpeg
 
   // Final flush of WebRTC audio (append, don't overwrite)

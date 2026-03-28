@@ -62,10 +62,11 @@ export class CamofoxPlaybookEngine {
       try {
         await this.executeStep(step, i + 1);
       } catch (err) {
+        const desc = `${step.action} ${this.describeTarget(step)}`.trim();
         if (step.optional) {
-          console.error(`[playbook] Step ${i + 1} (optional) skipped: ${(err as Error).message}`);
+          console.error(`[playbook] Step ${i + 1} (optional) skipped: ${desc} — ${(err as Error).message}`);
         } else {
-          console.error(`[playbook] Step ${i + 1} FAILED: ${(err as Error).message}`);
+          console.error(`[playbook] Step ${i + 1} FAILED: ${desc} — ${(err as Error).message}`);
           throw err;
         }
       }
@@ -302,10 +303,11 @@ export class PlaybookEngine {
       try {
         await this.executeStep(step, i + 1);
       } catch (err) {
+        const desc = `${step.action} ${this.describeTarget(step)}`.trim();
         if (step.optional) {
-          console.error(`[playbook] Step ${i + 1} (optional) skipped: ${(err as Error).message}`);
+          console.error(`[playbook] Step ${i + 1} (optional) skipped: ${desc} — ${(err as Error).message}`);
         } else {
-          console.error(`[playbook] Step ${i + 1} FAILED: ${(err as Error).message}`);
+          console.error(`[playbook] Step ${i + 1} FAILED: ${desc} — ${(err as Error).message}`);
           throw err;
         }
       }

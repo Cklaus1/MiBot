@@ -28,7 +28,7 @@ function perceptualHash(buf: Buffer): string {
 /**
  * Compare two image buffers for visual similarity.
  * Uses perceptual hashing (skips JPEG headers) + size comparison.
- * threshold: 0.02 = 2%
+ * threshold: 0.08 = 8%
  */
 function isSimilar(a: Buffer, b: Buffer, threshold: number): boolean {
   // Quick check: if sizes differ by more than 15%, definitely different
@@ -158,10 +158,11 @@ export class SignalTracker {
       return results;
     }, platform).catch(() => []);
 
-    // Dedup by content hash (handles DOM reordering and scrolling)
+    // Dedup by content hash + position (allows identical messages from same person)
     const now = new Date().toISOString();
-    for (const msg of messages) {
-      const hash = `${msg.sender}::${msg.text}`;
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      const hash = `${msg.sender}::${msg.text}::${i}`;
       if (!this.seenChatHashes.has(hash)) {
         this.seenChatHashes.add(hash);
         this.chat.push({ sender: msg.sender, text: msg.text, timestamp: now });
@@ -330,7 +331,7 @@ export class SignalTracker {
       // Compare raw JPEG bytes — sample evenly across the file and measure
       // the byte-level difference ratio. Under 2% = same slide.
       const currentBytes = fs.readFileSync(filepath);
-      if (this.lastScreenshotBytes && isSimilar(this.lastScreenshotBytes, currentBytes, 0.02)) {
+      if (this.lastScreenshotBytes && isSimilar(this.lastScreenshotBytes, currentBytes, 0.08)) {
         fs.unlinkSync(filepath);
         return; // Same slide, don't count it
       }
