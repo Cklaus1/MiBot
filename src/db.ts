@@ -69,6 +69,7 @@ export function getDb(): Database.Database {
     organizer: 'TEXT', organizer_email: 'TEXT', location: 'TEXT', description: 'TEXT',
     attendees: 'TEXT', is_recurring: 'INTEGER DEFAULT 0', recurrence_id: 'TEXT',
     participants: 'TEXT', speaker_timeline: 'TEXT', actual_start: 'TEXT', actual_end: 'TEXT',
+    heartbeat: 'TEXT',
   };
   for (const [col, type] of Object.entries(newCols)) {
     if (!cols.includes(col)) {
@@ -85,6 +86,11 @@ export function getDb(): Database.Database {
 
 export function closeDb(): void {
   if (_db) { _db.close(); _db = null; }
+}
+
+export function transaction<T>(fn: () => T): T {
+  const db = getDb();
+  return db.transaction(fn)();
 }
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -128,6 +134,7 @@ export interface Meeting {
   recurrence_id: string | null;
   participants: string | null;   // JSON
   speaker_timeline: string | null; // JSON
+  heartbeat: string | null;
   status: string;
   created_at: string;
 }
@@ -181,6 +188,7 @@ const MEETING_COLUMNS = new Set([
   'title', 'platform', 'join_url', 'start_time', 'end_time', 'actual_start', 'actual_end',
   'calendar_event_id', 'organizer', 'organizer_email', 'location', 'description',
   'attendees', 'is_recurring', 'recurrence_id', 'status', 'participants', 'speaker_timeline',
+  'heartbeat',
 ]);
 
 export function updateMeeting(id: number, updates: Record<string, unknown>): void {
@@ -203,6 +211,20 @@ export function updateMeetingStatus(id: number, status: string): void {
 
 export function updateMeetingParticipants(id: number, participants: Participant[]): void {
   updateMeeting(id, { participants: JSON.stringify(participants) });
+}
+
+export function updateHeartbeat(id: number): void {
+  getDb().prepare('UPDATE meetings SET heartbeat = ? WHERE id = ?').run(new Date().toISOString(), id);
+}
+
+export function recoverStaleMeetings(): number {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE meetings SET status = 'failed'
+    WHERE status IN ('joining', 'in_call', 'processing')
+      AND (heartbeat IS NULL OR datetime(heartbeat) < datetime('now', '-2 minutes'))
+  `).run();
+  return result.changes;
 }
 
 export function insertRecording(r: { meeting_id: number; audio_path: string }): Recording {

@@ -2,6 +2,7 @@ import { joinAndRecord, detectPlatform } from './bot.js';
 import { syncCalendar } from './calendar.js';
 import {
   getUpcomingMeetings, listMeetings, listRecordings, getRecordingWithMeeting,
+  recoverStaleMeetings, type Meeting,
 } from './db.js';
 import { loadConfig, saveDefaultConfig, shouldSkipMeeting, fmtTime } from './config.js';
 import { sendCommand } from './control.js';
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
     case 'sync':     await syncOnce(); break;
     case 'config':   showConfig(); break;
     case 'send':     await sendCmd(parseInt(args[1], 10), args.slice(2).join(' ')); break;
+    case 'status':   showStatus(); break;
     default:         printUsage(); break;
   }
 }
@@ -37,6 +39,7 @@ Usage:
   mibot recordings               List recordings
   mibot show <recording-id>      Show transcript + summary
   mibot config                   Show current configuration
+  mibot status                   Show running bots + health
   mibot send <id> <command>      Send command to running bot
 
 Control commands:
@@ -145,6 +148,39 @@ function showRecording(id: number): void {
   }
 }
 
+/** Show running/recent bot status with health info. */
+function showStatus(): void {
+  const meetings = listMeetings(20);
+  const active = meetings.filter(m => ['joining', 'in_call', 'processing'].includes(m.status));
+  const recent = meetings.filter(m => ['done', 'failed'].includes(m.status)).slice(0, 5);
+
+  if (active.length === 0) {
+    console.log('No active bots.');
+  } else {
+    console.log(`Active bots (${active.length}):`);
+    for (const m of active) {
+      const heartbeat = m.heartbeat ? timeSince(m.heartbeat) : 'no heartbeat';
+      const health = m.heartbeat && (Date.now() - new Date(m.heartbeat).getTime()) < 30000 ? 'healthy' : 'stale';
+      console.log(`  #${m.id} [${m.status}] ${m.platform} — ${m.title} (${heartbeat}, ${health})`);
+    }
+  }
+
+  if (recent.length > 0) {
+    console.log(`\nRecent (last 5):`);
+    for (const m of recent) {
+      const time = fmtTime(m.actual_start || m.start_time);
+      console.log(`  #${m.id} [${m.status}] ${m.platform} — ${m.title} (${time})`);
+    }
+  }
+}
+
+function timeSince(iso: string): string {
+  const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  return `${Math.floor(sec / 3600)}h ago`;
+}
+
 async function sendCmd(meetingId: number, command: string): Promise<void> {
   if (isNaN(meetingId) || !command) {
     console.error('Usage: mibot send <meeting-id> <command>');
@@ -175,9 +211,27 @@ function showConfig(): void {
 
 // ── Watcher ────────────────────────────────────────────────────────────
 
+/** Sort meetings by priority: more attendees first, then by start time. */
+function prioritizeMeetings(meetings: Meeting[]): Meeting[] {
+  return [...meetings].sort((a, b) => {
+    // More attendees = higher priority
+    const aCount = a.attendees ? (JSON.parse(a.attendees) as any[]).length : 0;
+    const bCount = b.attendees ? (JSON.parse(b.attendees) as any[]).length : 0;
+    if (bCount !== aCount) return bCount - aCount;
+    // Earlier start time wins ties
+    return new Date(a.start_time).getTime() - new Date(b.start_time).getTime();
+  });
+}
+
 async function startWatcher(): Promise<void> {
   saveDefaultConfig();
   const config = loadConfig();
+
+  // Recover meetings stuck from previous crashes
+  const recovered = recoverStaleMeetings();
+  if (recovered > 0) {
+    console.error(`[mibot] Recovered ${recovered} stale meeting(s) from previous crash`);
+  }
 
   console.error(`[mibot] Configuration:`);
   console.error(`  Join ${config.joinBeforeMinutes}m before start`);
@@ -191,17 +245,33 @@ async function startWatcher(): Promise<void> {
 
   await syncCalendar();
   const activeBots = new Set<number>();
+  const MAX_CONCURRENT_BOTS = 3;
 
   const poll = async () => {
     try {
       await syncCalendar();
 
-      const MAX_CONCURRENT_BOTS = 3;
+      // Recover any bots that died since last poll
+      const staleRecovered = recoverStaleMeetings();
+      if (staleRecovered > 0) {
+        console.error(`[mibot] Recovered ${staleRecovered} stale bot(s)`);
+        // Clean up activeBots set — remove IDs that were recovered (no longer running)
+        for (const id of activeBots) {
+          // If we just marked it failed, it's no longer active
+          const meetings = listMeetings(50);
+          const m = meetings.find(m => m.id === id);
+          if (m && m.status === 'failed') activeBots.delete(id);
+        }
+      }
+
       const upcoming = getUpcomingMeetings(config.joinBeforeMinutes + 1);
-      for (const meeting of upcoming) {
+      const prioritized = prioritizeMeetings(upcoming);
+
+      for (const meeting of prioritized) {
         if (activeBots.has(meeting.id)) continue;
         if (activeBots.size >= MAX_CONCURRENT_BOTS) {
-          console.error(`[mibot] Max concurrent bots (${MAX_CONCURRENT_BOTS}) reached, deferring: ${meeting.title}`);
+          const attendeeCount = meeting.attendees ? (JSON.parse(meeting.attendees) as any[]).length : 0;
+          console.error(`[mibot] Queue full (${MAX_CONCURRENT_BOTS}/${MAX_CONCURRENT_BOTS}), deferred: ${meeting.title} (${attendeeCount} attendees)`);
           break;
         }
 

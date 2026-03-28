@@ -62,72 +62,211 @@ function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/** Fetch upcoming calendar events via ms365-cli and sync to local db. */
-export async function syncCalendar(): Promise<Meeting[]> {
+/** Meeting URL regex shared between M365 and Google Calendar extraction. */
+const MEETING_URL_PATTERN = /https?:\/\/(?:[\w-]+\.)?(?:zoom\.us|teams\.microsoft\.com|teams\.live\.com|meet\.google\.com)\/[^\s"<>)]+/gi;
+
+/** Extract a meeting URL from a plain text string (for Google Calendar fields). */
+function extractMeetingUrlFromText(text: string): string | null {
+  const matches = text.match(MEETING_URL_PATTERN);
+  return matches ? matches[0] : null;
+}
+
+/** Path to gwscli binary (Google Workspace CLI). */
+const GWS_PATH = process.env.GWS_PATH || '/root/projects/gwscli/target/release/gws';
+
+/** Sync Google Calendar events via gwscli and insert into local db. */
+async function syncGoogleCalendar(): Promise<Meeting[]> {
+  const newMeetings: Meeting[] = [];
+
+  // Check if gws binary exists
+  const fs = await import('fs');
+  if (!fs.existsSync(GWS_PATH)) {
+    return newMeetings; // Silently skip — user hasn't set up gwscli
+  }
+
+  const now = new Date();
+  const end = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(GWS_PATH, [
+      'calendar', 'events', 'list',
+      '--params', JSON.stringify({
+        calendarId: 'primary',
+        timeMin: now.toISOString(),
+        timeMax: end.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+      }),
+      '--format', 'json',
+    ], { timeout: 15000, env: { ...process.env } }));
+  } catch (execErr: any) {
+    stdout = execErr.stdout || '';
+    if (!stdout) throw execErr;
+  }
+
+  if (!stdout.trim()) return newMeetings;
+
+  const data = JSON.parse(stdout);
+  const events = data.items || (Array.isArray(data) ? data : []);
+
+  for (const event of events) {
+    const eventId = `gcal:${event.id}`;
+    if (getMeetingByEventId(eventId)) continue;
+
+    // Extract meeting URL from: hangoutLink, location, description, conferenceData
+    const candidates: string[] = [];
+    if (event.hangoutLink) candidates.push(event.hangoutLink);
+    if (event.location) candidates.push(event.location);
+    if (event.description) candidates.push(event.description);
+    if (event.conferenceData?.entryPoints) {
+      for (const ep of event.conferenceData.entryPoints) {
+        if (ep.uri) candidates.push(ep.uri);
+      }
+    }
+
+    let url: string | null = null;
+    for (const text of candidates) {
+      url = extractMeetingUrlFromText(text);
+      if (url) break;
+    }
+    if (!url) continue;
+
+    const platform = detectPlatform(url);
+    if (!platform) continue;
+
+    const startDt = event.start?.dateTime || event.start?.date || now.toISOString();
+    const endDt = event.end?.dateTime || event.end?.date || undefined;
+
+    // Extract attendees
+    const attendees: Attendee[] = [];
+    if (event.attendees) {
+      for (const att of event.attendees) {
+        attendees.push({
+          name: att.displayName || '',
+          email: att.email || '',
+          status: att.responseStatus || 'none',
+        });
+      }
+    }
+
+    const organizer = event.organizer
+      ? { name: event.organizer.displayName || '', email: event.organizer.email || '' }
+      : null;
+
+    const meeting = insertMeeting({
+      title: event.summary || 'Untitled meeting',
+      platform,
+      join_url: url,
+      start_time: startDt,
+      end_time: endDt,
+      calendar_event_id: eventId,
+      organizer: organizer?.name,
+      organizer_email: organizer?.email,
+      location: event.location || undefined,
+      description: event.description ? stripHtml(event.description).substring(0, 2000) : undefined,
+      attendees: attendees.length > 0 ? attendees : undefined,
+      is_recurring: !!event.recurringEventId,
+      recurrence_id: event.recurringEventId || undefined,
+    });
+
+    const attCount = attendees.length;
+    const attStr = attCount > 0 ? ` (${attCount} attendees)` : '';
+    newMeetings.push(meeting);
+    console.error(`[mibot] Found (Google): ${meeting.title} (${platform}) at ${fmtTime(startDt)}${attStr}`);
+  }
+
+  return newMeetings;
+}
+
+/** Sync M365 calendar events via ms365-cli and insert into local db. */
+async function syncM365Calendar(): Promise<Meeting[]> {
   const now = new Date();
   const end = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   const newMeetings: Meeting[] = [];
 
+  let stdout: string;
   try {
-    let stdout: string;
+    ({ stdout } = await execFileAsync('ms365', [
+      'calendar', 'view',
+      '--start', now.toISOString(),
+      '--end', end.toISOString(),
+      '--select', 'id,subject,start,end,location,onlineMeeting,body,attendees,organizer,type,seriesMasterId',
+      '-o', 'json',
+    ], { timeout: 15000, env: { ...process.env } }));
+  } catch (execErr: any) {
+    stdout = execErr.stdout || '';
+    if (!stdout) throw execErr;
+  }
+
+  const data = JSON.parse(stdout);
+  const events = Array.isArray(data) ? data : data.value || [];
+
+  for (const event of events) {
+    const eventId = `m365:${event.id}`;
+    if (getMeetingByEventId(eventId)) continue;
+
+    const url = extractMeetingUrl(event);
+    if (!url) continue;
+    const platform = detectPlatform(url);
+    if (!platform) continue;
+
+    const startDt = event.start?.dateTime || now.toISOString();
+    const endDt = event.end?.dateTime || undefined;
+    const organizer = extractOrganizer(event);
+    const attendees = extractAttendees(event);
+    const loc = (event.location as Record<string, unknown>)?.displayName as string | undefined;
+    const bodyContent = (event.body as Record<string, unknown>)?.content as string | undefined;
+    const description = bodyContent ? stripHtml(bodyContent).substring(0, 2000) : undefined;
+
+    const meeting = insertMeeting({
+      title: event.subject || 'Untitled meeting',
+      platform,
+      join_url: url,
+      start_time: startDt,
+      end_time: endDt,
+      calendar_event_id: eventId,
+      organizer: organizer?.name,
+      organizer_email: organizer?.email,
+      location: loc,
+      description,
+      attendees: attendees.length > 0 ? attendees : undefined,
+      is_recurring: event.type === 'occurrence' || event.type === 'seriesMaster',
+      recurrence_id: event.seriesMasterId as string | undefined,
+    });
+
+    const attCount = attendees.length;
+    const attStr = attCount > 0 ? ` (${attCount} attendees)` : '';
+    newMeetings.push(meeting);
+    console.error(`[mibot] Found: ${meeting.title} (${platform}) at ${fmtTime(startDt)}${attStr}`);
+  }
+
+  return newMeetings;
+}
+
+/** Fetch upcoming calendar events from all configured providers and sync to local db. */
+export async function syncCalendar(): Promise<Meeting[]> {
+  const newMeetings: Meeting[] = [];
+
+  // 1. Try M365 sync (if MS365_CLI_CLIENT_ID is configured)
+  if (process.env.MS365_CLI_CLIENT_ID) {
     try {
-      ({ stdout } = await execFileAsync('ms365', [
-        'calendar', 'view',
-        '--start', now.toISOString(),
-        '--end', end.toISOString(),
-        '--select', 'id,subject,start,end,location,onlineMeeting,body,attendees,organizer,type,seriesMasterId',
-        '-o', 'json',
-      ], { timeout: 15000, env: { ...process.env } }));
-    } catch (execErr: any) {
-      stdout = execErr.stdout || '';
-      if (!stdout) throw execErr;
+      const m365Meetings = await syncM365Calendar();
+      newMeetings.push(...m365Meetings);
+    } catch (err) {
+      const msg = (err as Error).message;
+      const stderr = (err as any).stderr || '';
+      console.error(`[mibot] M365 calendar sync failed: ${msg}\n${stderr}`);
     }
+  }
 
-    const data = JSON.parse(stdout);
-    const events = Array.isArray(data) ? data : data.value || [];
-
-    for (const event of events) {
-      const eventId = `m365:${event.id}`;
-      if (getMeetingByEventId(eventId)) continue;
-
-      const url = extractMeetingUrl(event);
-      if (!url) continue;
-      const platform = detectPlatform(url);
-      if (!platform) continue;
-
-      const startDt = event.start?.dateTime || now.toISOString();
-      const endDt = event.end?.dateTime || undefined;
-      const organizer = extractOrganizer(event);
-      const attendees = extractAttendees(event);
-      const loc = (event.location as Record<string, unknown>)?.displayName as string | undefined;
-      const bodyContent = (event.body as Record<string, unknown>)?.content as string | undefined;
-      const description = bodyContent ? stripHtml(bodyContent).substring(0, 2000) : undefined;
-
-      const meeting = insertMeeting({
-        title: event.subject || 'Untitled meeting',
-        platform,
-        join_url: url,
-        start_time: startDt,
-        end_time: endDt,
-        calendar_event_id: eventId,
-        organizer: organizer?.name,
-        organizer_email: organizer?.email,
-        location: loc,
-        description,
-        attendees: attendees.length > 0 ? attendees : undefined,
-        is_recurring: event.type === 'occurrence' || event.type === 'seriesMaster',
-        recurrence_id: event.seriesMasterId as string | undefined,
-      });
-
-      const attCount = attendees.length;
-      const attStr = attCount > 0 ? ` (${attCount} attendees)` : '';
-      newMeetings.push(meeting);
-      console.error(`[mibot] Found: ${meeting.title} (${platform}) at ${fmtTime(startDt)}${attStr}`);
-    }
+  // 2. Try Google Calendar sync (via gwscli)
+  try {
+    const gcalMeetings = await syncGoogleCalendar();
+    newMeetings.push(...gcalMeetings);
   } catch (err) {
     const msg = (err as Error).message;
-    const stderr = (err as any).stderr || '';
-    console.error(`[mibot] M365 calendar sync failed: ${msg}\n${stderr}`);
+    console.error(`[mibot] Google Calendar sync failed: ${msg}`);
   }
 
   return newMeetings;

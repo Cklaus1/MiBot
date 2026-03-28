@@ -4,7 +4,7 @@ import os from 'os';
 import fs from 'fs';
 import {
   insertMeeting, insertRecording, updateMeetingStatus, updateRecording,
-  updateMeeting, getMeeting,
+  updateMeeting, getMeeting, updateHeartbeat, transaction,
 } from './db.js';
 import { loadConfig } from './config.js';
 import { SignalTracker } from './signals.js';
@@ -91,18 +91,21 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       await camofoxPage.close();
       camofoxPage = null;
 
-      updateMeeting(meeting.id, {
-        status: 'processing',
-        actual_end: new Date().toISOString(),
-        participants: JSON.stringify(result.participants),
-        speaker_timeline: JSON.stringify(result.speakerTimeline),
-      });
+      // Wrap DB updates in transaction to prevent partial writes
+      transaction(() => {
+        updateMeeting(meeting.id, {
+          status: 'processing',
+          actual_end: new Date().toISOString(),
+          participants: JSON.stringify(result.participants),
+          speaker_timeline: JSON.stringify(result.speakerTimeline),
+        });
 
-      if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000) {
-        updateRecording(recording.id, { status: 'recorded' });
-      } else {
-        updateRecording(recording.id, { status: 'no_audio' });
-      }
+        if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000) {
+          updateRecording(recording.id, { status: 'recorded' });
+        } else {
+          updateRecording(recording.id, { status: 'no_audio' });
+        }
+      });
 
       // Write metadata sidecar
       writeMetadata(meeting, recording, opts, platform, title, result);
@@ -144,24 +147,36 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       updateMeeting(meeting.id, { status: 'in_call', actual_start: new Date().toISOString() });
       console.error('[mibot] In call. Recording...');
 
+      // Heartbeat interval — proves bot is alive (for crash detection)
+      const heartbeatInterval = setInterval(() => updateHeartbeat(meeting.id), 10000);
+
       const webrtcAudioPath = startAudioCapture(page, audioPath);
       const signalTracker = new SignalTracker(RECORDINGS_DIR, meeting.id);
 
       const { participants: trackedParticipants, speakerTimeline } = await waitForMeetingEnd(page, platform, config, signalTracker);
+      clearInterval(heartbeatInterval);
       const signals = signalTracker.finish();
 
       console.error('[mibot] Leaving. Saving audio...');
       await stopAudioCapture(page, audioPath, webrtcAudioPath);
 
-      updateMeeting(meeting.id, {
-        status: 'processing',
-        actual_end: new Date().toISOString(),
-        participants: JSON.stringify(trackedParticipants),
-        speaker_timeline: JSON.stringify(speakerTimeline),
+      // Wrap DB updates in transaction to prevent partial writes
+      transaction(() => {
+        updateMeeting(meeting.id, {
+          status: 'processing',
+          actual_end: new Date().toISOString(),
+          participants: JSON.stringify(trackedParticipants),
+          speaker_timeline: JSON.stringify(speakerTimeline),
+        });
+
+        if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000) {
+          updateRecording(recording.id, { status: 'recorded' });
+        } else {
+          updateRecording(recording.id, { status: 'failed' });
+        }
       });
 
       if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000) {
-        updateRecording(recording.id, { status: 'recorded' });
         const metadataPath = audioPath.replace(/\.\w+$/, '.json');
         const meetingData = getMeeting(meeting.id);
         const metadata = {
@@ -187,7 +202,6 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
         updateRecording(recording.id, { metadata_path: metadataPath });
         console.error(`[mibot] Metadata: ${metadataPath}`);
       } else {
-        updateRecording(recording.id, { status: 'failed' });
         console.error('[mibot] Warning: recording file is empty');
       }
 
@@ -334,11 +348,15 @@ async function installCamofoxAudioCapture(page: CamofoxPage): Promise<void> {
 
 /** Flush captured audio chunks to disk. Returns bytes written. */
 async function flushCamofoxAudio(page: CamofoxPage, outputPath: string): Promise<number> {
-  const audioChunk = await page.eval(AUDIO_FLUSH_EXPR) as string;
-  if (audioChunk && audioChunk.length > 10) {
-    const buf = Buffer.from(audioChunk, 'base64');
-    fs.appendFileSync(outputPath, buf);
-    return fs.statSync(outputPath).size;
+  try {
+    const audioChunk = await page.eval(AUDIO_FLUSH_EXPR) as string;
+    if (audioChunk && audioChunk.length > 10) {
+      const buf = Buffer.from(audioChunk, 'base64');
+      fs.appendFileSync(outputPath, buf);
+      return fs.statSync(outputPath).size;
+    }
+  } catch (err) {
+    console.error(`[mibot] WARNING: Audio flush failed — ${(err as Error).message}`);
   }
   return fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
 }
@@ -380,6 +398,9 @@ async function monitorCamofoxMeeting(
 
   while (Date.now() - startTime < maxMs) {
     await page.waitForTimeout(5000);
+
+    // Heartbeat — proves bot is alive
+    updateHeartbeat(meetingId);
 
     // Check if still in the call
     const inCall = await page.isTextVisible('Leave call').catch(() => false);
