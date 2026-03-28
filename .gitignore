@@ -1,0 +1,6 @@
+node_modules/
+dist/
+recordings/
+*.db
+vendor/
+.env

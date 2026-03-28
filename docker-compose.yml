@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  mibot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - MS365_CLI_CLIENT_ID=${MS365_CLI_CLIENT_ID}
+      - MS365_CLI_TENANT_ID=${MS365_CLI_TENANT_ID}
+    volumes:
+      # Mount config (playbooks, config.json, etc.)
+      - ${HOME}/.config/mibot:/root/.config/mibot
+      # Persist SQLite database + recordings
+      - mibot-data:/root/.local/share/mibot
+    # For ad-hoc commands: docker compose run mibot node dist/index.js join <url>
+    # Default: starts the calendar watcher (mibot start)
+
+volumes:
+  mibot-data:
