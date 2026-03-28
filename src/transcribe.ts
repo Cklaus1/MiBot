@@ -21,7 +21,9 @@ export async function transcribe(
   const audioDir = path.dirname(audioPath);
   const audioFile = path.basename(audioPath);
 
-  console.error('[mibot] Transcribing via audioscript...');
+  // ── Stage 1: AudioScript (transcription + diarization) ──────────────
+  console.error('[mibot] Stage 1: Transcribing via audioscript...');
+  let transcriptJson: string | null = null;
   try {
     const { stdout } = await execFileAsync('audioscript', [
       'transcribe', '--diarize', '-i', audioFile,
@@ -31,7 +33,13 @@ export async function transcribe(
     const outputMatch = stdout.match(/"output_dir":\s*"([^"]+)"/);
     const outputDir = outputMatch ? path.resolve(audioDir, outputMatch[1]) : path.join(audioDir, 'output');
 
-    // Find transcript file
+    // Find transcript JSON file (DeepScript needs this)
+    const jsonFile = path.join(outputDir, audioFile.replace(/\.\w+$/, '.json'));
+    if (fs.existsSync(jsonFile)) {
+      transcriptJson = jsonFile;
+    }
+
+    // Find transcript markdown file
     const mdFile = path.join(outputDir, audioFile.replace(/\.\w+$/, '.md'));
     if (fs.existsSync(mdFile)) {
       updateRecording(recordingId, { transcript_path: mdFile });
@@ -47,6 +55,55 @@ export async function transcribe(
     const stderr = (err as any).stderr || '';
     console.error(`[mibot] Transcription failed: ${(err as Error).message}${stderr ? '\n' + stderr : ''}`);
     updateRecording(recordingId, { status: 'transcribe_failed' });
+    return;
+  }
+
+  // ── Stage 2: DeepScript (analysis + action items) ───────────────────
+  if (!transcriptJson || !fs.existsSync(transcriptJson)) {
+    console.error('[mibot] No transcript JSON for DeepScript — skipping analysis');
+    return;
+  }
+
+  try {
+    await execFileAsync('which', ['deepscript'], { timeout: 3000 });
+  } catch {
+    console.error('[mibot] deepscript not installed — skipping analysis');
+    return;
+  }
+
+  console.error('[mibot] Stage 2: Analyzing via deepscript...');
+  try {
+    const analysisDir = path.join(path.dirname(transcriptJson), 'analysis');
+    const deepscriptArgs = [
+      'analyze', transcriptJson,
+      '--output-dir', analysisDir,
+      '--calendar',  // enrich with calendar context
+      '--cms',       // write CMS episode for cross-call tracking
+    ];
+
+    const { stdout, stderr } = await execFileAsync('deepscript', deepscriptArgs, {
+      timeout: 10 * 60 * 1000, // 10 min for LLM analysis
+      cwd: path.dirname(transcriptJson),
+      env: { ...process.env },
+    });
+
+    // Check for analysis output
+    if (fs.existsSync(analysisDir)) {
+      const analysisFiles = fs.readdirSync(analysisDir).filter(f => f.endsWith('.json') || f.endsWith('.md'));
+      if (analysisFiles.length > 0) {
+        console.error(`[mibot] Analysis complete: ${analysisFiles.length} file(s) in ${analysisDir}`);
+      }
+    }
+
+    // Log any useful info from deepscript output
+    if (stdout) {
+      const typeMatch = stdout.match(/"classification":\s*"([^"]+)"/);
+      if (typeMatch) console.error(`[mibot] Call type: ${typeMatch[1]}`);
+    }
+  } catch (err) {
+    const stderr = (err as any).stderr || '';
+    console.error(`[mibot] DeepScript analysis failed: ${(err as Error).message}${stderr ? '\n' + stderr.substring(0, 200) : ''}`);
+    // Don't fail the recording — transcription succeeded, analysis is a bonus
   }
 }
 
@@ -98,15 +155,11 @@ export async function autoLabelSpeakers(
 
     // Strategy 2: Match by speaker timeline overlap
     if (speakerTimeline.length > 0 && unlabeled.length > 0 && candidateNames.length > 0) {
-      // For each unlabeled cluster, check which visual speaker has the most temporal overlap
-      // This requires parsing the diarization output to get cluster timestamps
-      // For now, log what we have for future improvement
       console.error(`[mibot] Speaker timeline has ${speakerTimeline.length} segments — timing-based matching available for future use`);
     }
 
     // Strategy 3: If only 1 candidate name and multiple clusters, label the dominant one
     if (candidateNames.length === 1 && unlabeled.length > 1) {
-      // Find the cluster with the most speech (most calls/segments)
       let bestCluster = unlabeled[0];
       let bestCount = 0;
       for (const cid of unlabeled) {
