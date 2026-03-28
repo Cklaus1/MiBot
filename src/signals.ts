@@ -147,10 +147,17 @@ export class SignalTracker {
       }
 
       if (p === 'zoom') {
-        const items = document.querySelectorAll('[class*="chat-message"]');
+        // Zoom web client chat panel
+        const items = document.querySelectorAll(
+          '[class*="chat-message"], [class*="ChatMessage"], [id*="chat-message"]'
+        );
         items.forEach(el => {
-          const sender = el.querySelector('[class*="sender"]')?.textContent?.trim() || '';
-          const text = el.querySelector('[class*="content"], [class*="message-text"]')?.textContent?.trim() || '';
+          const sender = el.querySelector(
+            '[class*="sender"], [class*="ChatSender"], [class*="message-author"]'
+          )?.textContent?.trim() || '';
+          const text = el.querySelector(
+            '[class*="content"], [class*="message-text"], [class*="ChatContent"]'
+          )?.textContent?.trim() || '';
           if (text) results.push({ sender, text });
         });
       }
@@ -186,7 +193,6 @@ export class SignalTracker {
           const type = el.getAttribute('data-tid')?.replace('reaction-', '')
             || el.getAttribute('aria-label')
             || el.textContent?.trim() || 'unknown';
-          // Participant name is sometimes in a sibling or parent
           const name = el.closest('[data-tid="participantItem"]')?.textContent?.trim() || '';
           results.push({ participant: name, type });
         });
@@ -196,6 +202,19 @@ export class SignalTracker {
         handIcons.forEach(el => {
           const name = el.closest('[data-tid="participantItem"]')?.textContent?.trim() || '';
           results.push({ participant: name, type: 'raised_hand' });
+        });
+      }
+
+      if (p === 'zoom') {
+        // Zoom shows floating reaction animations over video tiles
+        const reactionEls = document.querySelectorAll(
+          '[class*="meeting-reaction"], [class*="reactions-animation"], [class*="emoji-reaction"]'
+        );
+        reactionEls.forEach(el => {
+          const type = el.getAttribute('aria-label') || el.textContent?.trim() || 'unknown';
+          const tile = el.closest('[class*="video-avatar"], [class*="participant"]');
+          const name = tile?.querySelector('[class*="display-name"]')?.textContent?.trim() || '';
+          results.push({ participant: name, type });
         });
       }
 
@@ -232,6 +251,18 @@ export class SignalTracker {
         const handIcons = document.querySelectorAll('[aria-label*="hand raised"], [data-is-hand-raised="true"]');
         handIcons.forEach(el => {
           const name = el.closest('[data-participant-id]')?.textContent?.trim() || '';
+          if (name) results.push(name);
+        });
+      }
+
+      if (p === 'zoom') {
+        // Zoom shows a raised hand icon next to participant name in the roster
+        const handEls = document.querySelectorAll(
+          '[class*="raise-hand"], [class*="hand-raised"], [aria-label*="hand raised"]'
+        );
+        handEls.forEach(el => {
+          const item = el.closest('[class*="participants-item"], [class*="participant"]');
+          const name = item?.querySelector('[class*="display-name"]')?.textContent?.trim() || '';
           if (name) results.push(name);
         });
       }
@@ -283,8 +314,18 @@ export class SignalTracker {
       }
 
       if (p === 'zoom') {
-        const banner = document.querySelector('[class*="sharing-indicator"], [class*="screen-share"]');
-        if (banner) return banner.textContent?.trim() || 'someone';
+        // Zoom shows "X's screen" or a sharing indicator bar
+        const banner = document.querySelector(
+          '[class*="sharing-indicator"], [class*="screen-share"], [class*="share-bar"], [aria-label*="screen share"]'
+        );
+        if (banner) {
+          const text = banner.textContent?.trim() || '';
+          const nameMatch = text.match(/(.+?)(?:'s screen|is sharing)/i);
+          return nameMatch ? nameMatch[1].trim() : text || 'someone';
+        }
+        // Also check for sharing content view
+        const shareView = document.querySelector('[class*="sharing-content"], [class*="share-canvas"]');
+        if (shareView) return 'someone';
       }
 
       return null;

@@ -6,7 +6,7 @@ import {
   insertMeeting, insertRecording, updateMeetingStatus, updateRecording,
   updateMeeting, getMeeting, updateHeartbeat, transaction,
 } from './db.js';
-import { loadConfig } from './config.js';
+import { loadConfig, isBot } from './config.js';
 import { SignalTracker } from './signals.js';
 import { launchBrowser, stopRecording } from './recorder.js';
 import { injectAudioCaptureAllFrames } from './webrtc-capture.js';
@@ -382,8 +382,10 @@ async function monitorCamofoxMeeting(
   config: ReturnType<typeof loadConfig>,
 ): Promise<CamofoxMonitorResult> {
   const allSignals: Array<{ raw: string; type: string; who: string; detail: string; time: string }> = [];
-  const trackedParticipants: any[] = [];
-  const speakerTimeline: any[] = [];
+  const participantMap = new Map<string, { name: string; joined_at: string; left_at: string | null; is_bot: boolean; spoke: boolean }>();
+  const speakerSegments: Array<{ speaker: string; start: string; end: string | null }> = [];
+  let currentSpeaker: string | null = null;
+  let currentSpeakerStart: string | null = null;
   const startTime = Date.now();
   const maxMs = config.maxDurationHours * 60 * 60 * 1000;
   let lastParticipantCount = -1;
@@ -445,14 +447,82 @@ async function monitorCamofoxMeeting(
       }
     } catch {}
 
-    // Participants, hand raises, screen share detection
+    // Participants, hand raises, screen share, active speaker detection
     try {
       const { snapshot } = await page.snapshot();
+
+      // Extract participant names from snapshot (Meet shows names in various elements)
+      const participantNames = await page.eval(`
+        (() => {
+          const names = new Set();
+          // Video tiles show participant names
+          document.querySelectorAll('[data-self-name]').forEach(el => {
+            const n = el.getAttribute('data-self-name');
+            if (n) names.add(n);
+          });
+          // People panel list items
+          document.querySelectorAll('[data-participant-id]').forEach(el => {
+            const n = el.textContent?.trim();
+            if (n && n.length < 100) names.add(n);
+          });
+          // Fallback: parse participant names from accessible labels
+          document.querySelectorAll('[aria-label]').forEach(el => {
+            const label = el.getAttribute('aria-label') || '';
+            const m = label.match(/^(.+?)(?:'s video| is presenting| raised)/);
+            if (m) names.add(m[1]);
+          });
+          return [...names];
+        })()
+      `) as string[];
+      if (participantNames && participantNames.length > 0) {
+        const now = new Date().toISOString();
+        const currentNames = new Set(participantNames);
+        for (const name of participantNames) {
+          if (!participantMap.has(name)) {
+            participantMap.set(name, { name, joined_at: now, left_at: null, is_bot: isBot(name), spoke: false });
+          } else {
+            const p = participantMap.get(name)!;
+            if (p.left_at) { p.left_at = null; } // rejoined
+          }
+        }
+        // Mark participants who left
+        for (const [name, p] of participantMap) {
+          if (!currentNames.has(name) && !p.left_at) {
+            p.left_at = now;
+          }
+        }
+      }
+
+      // Detect active speaker from snapshot
+      const speakerResult = await page.eval(`
+        (() => {
+          // Meet highlights active speaker with blue border or shows name overlay
+          const active = document.querySelector('[data-self-name][data-is-speaking="true"]');
+          if (active) return active.getAttribute('data-self-name');
+          // Speaker name overlay classes
+          const overlay = document.querySelector('.KV1GEc, .cS7aqe.NkoVdd');
+          if (overlay?.textContent?.trim()) return overlay.textContent.trim();
+          return null;
+        })()
+      `) as string | null;
+      if (speakerResult !== currentSpeaker) {
+        const now = new Date().toISOString();
+        if (currentSpeaker && currentSpeakerStart) {
+          speakerSegments.push({ speaker: currentSpeaker, start: currentSpeakerStart, end: now });
+        }
+        currentSpeaker = speakerResult;
+        currentSpeakerStart = speakerResult ? now : null;
+        if (speakerResult) {
+          const p = participantMap.get(speakerResult);
+          if (p) p.spoke = true;
+        }
+      }
+
       const peopleMatch = snapshot.match(/button "People" \[.*?\]: "(\d+)"/);
       if (peopleMatch) {
         const count = parseInt(peopleMatch[1]);
         if (count !== lastParticipantCount) {
-          console.error(`[mibot] Participants: ${count}`);
+          console.error(`[mibot] Participants: ${count}${participantMap.size > 0 ? ` (${[...participantMap.keys()].join(', ')})` : ''}`);
           lastParticipantCount = count;
         }
       }
@@ -533,7 +603,22 @@ async function monitorCamofoxMeeting(
   };
   console.error(`[mibot] Signals: ${signals.chat.length} chat, ${signals.reactions.length} reactions, ${signals.hand_raises.length} hands`);
 
-  return { participants: trackedParticipants, speakerTimeline, signals };
+  // Close any open speaker segment
+  if (currentSpeaker && currentSpeakerStart) {
+    speakerSegments.push({ speaker: currentSpeaker, start: currentSpeakerStart, end: new Date().toISOString() });
+  }
+
+  // Close any open participant leave times
+  const endTime = new Date().toISOString();
+  for (const p of participantMap.values()) {
+    if (!p.left_at) p.left_at = endTime;
+  }
+
+  const participants = [...participantMap.values()];
+  console.error(`[mibot] Participants tracked: ${participants.length} (${participants.filter(p => p.spoke).length} spoke)`);
+  console.error(`[mibot] Speaker segments: ${speakerSegments.length}`);
+
+  return { participants, speakerTimeline: speakerSegments, signals };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
