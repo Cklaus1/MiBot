@@ -16,6 +16,7 @@ import { waitForMeetingEnd } from './meeting.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
 import { transcribe } from './transcribe.js';
 import { launchCamofox, type CamofoxPage } from './camofox.js';
+import { loadSelectors } from './selectors.js';
 import { log } from './log.js';
 
 const RECORDINGS_DIR = path.join(os.homedir(), '.config', 'mibot', 'recordings');
@@ -493,14 +494,17 @@ async function monitorCamofoxMeeting(
         }
       }
 
-      // Detect active speaker from snapshot
+      // Detect active speaker from snapshot. Overlay selectors are config-driven
+      // (Meet's minified classes churn) — shared with the Playwright path via selectors.ts.
+      const overlaySel = loadSelectors('meet').activeSpeaker.join(', ');
       const speakerResult = await page.eval(`
         (() => {
           // Meet highlights active speaker with blue border or shows name overlay
           const active = document.querySelector('[data-self-name][data-is-speaking="true"]');
           if (active) return active.getAttribute('data-self-name');
-          // Speaker name overlay classes
-          const overlay = document.querySelector('.KV1GEc, .cS7aqe.NkoVdd');
+          // Speaker name overlay classes (fragile — from selectors config)
+          const overlaySel = ${JSON.stringify(overlaySel)};
+          const overlay = overlaySel ? document.querySelector(overlaySel) : null;
           if (overlay?.textContent?.trim()) return overlay.textContent.trim();
           return null;
         })()

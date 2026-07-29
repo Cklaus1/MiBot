@@ -118,7 +118,7 @@ export class CamofoxPlaybookEngine {
           // Wait for selector via eval
           const start = Date.now();
           while (Date.now() - start < timeout) {
-            const found = await this.page.eval(`!!document.querySelector('${step.selector.replace(/'/g, "\\'")}')`);
+            const found = await this.page.eval(`!!document.querySelector(${JSON.stringify(step.selector)})`);
             if (found) {
               console.error(`[playbook] Step ${num}: found ${step.selector}`);
               return;
@@ -166,7 +166,7 @@ export class CamofoxPlaybookEngine {
         await this.page.eval(`
           const el = document.activeElement;
           if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) {
-            el.value = '${value.replace(/'/g, "\\'")}';
+            el.value = ${JSON.stringify(value)};
             el.dispatchEvent(new Event('input', { bubbles: true }));
           }
         `);
@@ -175,9 +175,10 @@ export class CamofoxPlaybookEngine {
       }
 
       case 'press':
+        const pressKey = JSON.stringify(step.key || 'Enter');
         await this.page.eval(`
-          document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: '${step.key || 'Enter'}', bubbles: true }));
-          document.activeElement?.dispatchEvent(new KeyboardEvent('keyup', { key: '${step.key || 'Enter'}', bubbles: true }));
+          document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: ${pressKey}, bubbles: true }));
+          document.activeElement?.dispatchEvent(new KeyboardEvent('keyup', { key: ${pressKey}, bubbles: true }));
         `);
         console.error(`[playbook] Step ${num}: pressed ${step.key}`);
         return;
@@ -240,11 +241,11 @@ export class CamofoxPlaybookEngine {
     const texts = [step.text, step.name].filter(Boolean);
     if (texts.length === 0) {
       if (step.selector) {
-        return `(() => { const el = document.querySelector('${step.selector.replace(/'/g, "\\'")}'); if (el) { el.click(); return 'clicked: ' + el.textContent?.trim(); } return 'not found'; })()`;
+        return `(() => { const el = document.querySelector(${JSON.stringify(step.selector)}); if (el) { el.click(); return 'clicked: ' + el.textContent?.trim(); } return 'not found'; })()`;
       }
       return "'not found'";
     }
-    const conditions = texts.map(t => `b.textContent?.includes('${t!.replace(/'/g, "\\'")}')`).join(' || ');
+    const conditions = texts.map(t => `b.textContent?.includes(${JSON.stringify(t)})`).join(' || ');
     return `(() => { const btns = Array.from(document.querySelectorAll('button')); const btn = btns.find(b => ${conditions}); if (btn) { btn.click(); return 'clicked: ' + btn.textContent?.trim(); } return 'not found'; })()`;
   }
 
@@ -371,7 +372,7 @@ export class PlaybookEngine {
         // For Playwright, fall back to regular evaluate
         const expr = step.expression ? this.interpolate(step.expression) : `(() => {
           const btns = Array.from(document.querySelectorAll('button'));
-          const btn = btns.find(b => b.textContent?.includes('${(step.text || step.name || '').replace(/'/g, "\\'")}'));
+          const btn = btns.find(b => b.textContent?.includes(${JSON.stringify(step.text || step.name || '')}));
           if (btn) { btn.click(); return 'clicked: ' + btn.textContent?.trim(); }
           return 'not found';
         })()`;

@@ -1,0 +1,4 @@
+{
+  "participantNames": ["[class*=\"participant\"]", ".participants-item__display-name", "[class*=\"attendee\"]"],
+  "activeSpeaker": [".speaker-active-container__name", "[class*=\"active-speaker\"] [class*=\"display-name\"]"]
+}

@@ -1,0 +1,4 @@
+{
+  "participantNames": ["[data-tid=\"participantItem\"]", ".ui-chat__messagecontent", "[role=\"listitem\"]"],
+  "activeSpeaker": ["[data-tid=\"video-stream-label\"]", "[data-tid=\"active-speaker-name\"]"]
+}

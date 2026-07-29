@@ -2,6 +2,7 @@ import { type Page } from 'playwright';
 import { type Participant, type SpeakerSegment } from './db.js';
 import { isBot, loadConfig } from './config.js';
 import { SignalTracker } from './signals.js';
+import { loadSelectors } from './selectors.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -14,16 +15,11 @@ export interface ParticipantState {
 
 /** Scrape current participant names from the meeting UI. */
 export async function getParticipants(page: Page, platform: string): Promise<ParticipantState> {
-  const names: string[] = await page.evaluate((p) => {
+  const selectors = loadSelectors(platform).participantNames;
+  const names: string[] = await page.evaluate((sels) => {
     const results: string[] = [];
-    // Each platform renders participants differently
-    const selectors = p === 'meet'
-      ? ['[data-participant-id]', '[data-self-name]', '.zWfAib'] // Meet participant names
-      : p === 'teams'
-      ? ['[data-tid="participantItem"]', '.ui-chat__messagecontent', '[role="listitem"]']
-      : ['[class*="participant"]', '.participants-item__display-name', '[class*="attendee"]']; // Zoom
 
-    for (const sel of selectors) {
+    for (const sel of sels) {
       document.querySelectorAll(sel).forEach(el => {
         const name = (el.textContent || '').trim();
         if (name && name.length > 0 && name.length < 100) results.push(name);
@@ -41,7 +37,7 @@ export async function getParticipants(page: Page, platform: string): Promise<Par
     }
 
     return [...new Set(results)];
-  }, platform);
+  }, selectors);
 
   // Normalize whitespace in names before dedup
   const normalized = names.map(n => n.replace(/\s+/g, ' ').trim()).filter(n => n.length > 0);
@@ -65,16 +61,21 @@ export async function getParticipants(page: Page, platform: string): Promise<Par
 
 /** Detect who is currently speaking by checking platform-specific active speaker indicators. */
 export async function getActiveSpeaker(page: Page, platform: string): Promise<string | null> {
-  return page.evaluate((p) => {
+  const overlaySelectors = loadSelectors(platform).activeSpeaker;
+  return page.evaluate(({ p, overlays }) => {
+    // Shared: the name-overlay fallback (fragile minified classes live in config).
+    const overlaySel = overlays.join(', ');
+    const overlayText = (): string | null => {
+      if (!overlaySel) return null;
+      const el = document.querySelector(overlaySel);
+      return el?.textContent?.trim() || null;
+    };
+
     if (p === 'teams') {
       // Teams highlights the active speaker with a colored border and shows their name
-      // The active speaker name appears in several places:
-
-      // 1. The large stage area shows the speaker's name
-      const stageLabel = document.querySelector(
-        '[data-tid="video-stream-label"], [data-tid="active-speaker-name"]'
-      );
-      if (stageLabel?.textContent?.trim()) return stageLabel.textContent.trim();
+      // 1. The large stage area shows the speaker's name (config-driven overlay)
+      const overlay = overlayText();
+      if (overlay) return overlay;
 
       // 2. Participant with speaking indicator (animated border / voice activity)
       const speakingParticipant = document.querySelector(
@@ -93,13 +94,13 @@ export async function getActiveSpeaker(page: Page, platform: string): Promise<st
 
     if (p === 'meet') {
       // Meet shows the active speaker's name at the bottom of the video tile
-      // and highlights their video tile border in blue
+      // and highlights their video tile border in blue. Stable attribute first.
       const activeTile = document.querySelector('[data-self-name][data-is-speaking="true"]');
       if (activeTile) return activeTile.getAttribute('data-self-name');
 
-      // Look for the speaker name overlay
-      const speakerName = document.querySelector('.KV1GEc, .cS7aqe.NkoVdd');
-      if (speakerName?.textContent?.trim()) return speakerName.textContent.trim();
+      // Fallback: config-driven name overlay (fragile minified classes)
+      const overlay = overlayText();
+      if (overlay) return overlay;
 
       // Participant list shows a speaker icon next to active speaker
       const speakingIcon = document.querySelector('.google-material-icons:has(+ .ZjFb7c)');
@@ -109,25 +110,23 @@ export async function getActiveSpeaker(page: Page, platform: string): Promise<st
     }
 
     if (p === 'zoom') {
-      // Zoom highlights the active speaker with a green border
-      const activeSpeaker = document.querySelector(
-        '.speaker-active-container__name, [class*="active-speaker"] [class*="display-name"]'
-      );
-      if (activeSpeaker?.textContent?.trim()) return activeSpeaker.textContent.trim();
+      // Zoom highlights the active speaker with a green border (config-driven overlay)
+      const overlay = overlayText();
+      if (overlay) return overlay;
 
       // Participant panel shows a mic icon with voice activity
       const participants = document.querySelectorAll('[class*="participants-item"]');
-      for (const p of participants) {
-        const isSpeaking = p.querySelector('[class*="icon-unmuted"][class*="speaking"], [class*="voice-level"]');
+      for (const el of participants) {
+        const isSpeaking = el.querySelector('[class*="icon-unmuted"][class*="speaking"], [class*="voice-level"]');
         if (isSpeaking) {
-          const name = p.querySelector('[class*="display-name"]');
+          const name = el.querySelector('[class*="display-name"]');
           if (name?.textContent?.trim()) return name.textContent.trim();
         }
       }
     }
 
     return null;
-  }, platform).catch(() => null);
+  }, { p: platform, overlays: overlaySelectors }).catch(() => null);
 }
 
 // ── Speaker tracker ───────────────────────────────────────────────────

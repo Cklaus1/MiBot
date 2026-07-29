@@ -1,6 +1,24 @@
+# Dependencies & build output
 node_modules/
 dist/
+vendor/
+cache/
+
+# Local data & recordings
 recordings/
 *.db
-vendor/
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Secrets & environment
 .env
+.env.*
+!.env.example
+
+# Editor / tooling
+.claude/
+*.log
+
+# OS cruft
+.DS_Store

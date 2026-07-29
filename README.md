@@ -82,6 +82,22 @@ Playbooks support actions: `click`, `fill`, `type`, `wait`, `screenshot`, `press
 
 Set `"browser": "camofox"` in a playbook to use the anti-detection browser.
 
+## Selector overrides
+
+MiBot scrapes participant names and the active speaker from each platform's UI.
+The fragile part — obfuscated minified class names like Meet's `.KV1GEc` — can be
+overridden without rebuilding by dropping a JSON file in
+`~/.config/mibot/selectors/<platform>.json`:
+
+```bash
+mkdir -p ~/.config/mibot/selectors
+cp selectors/meet.json.example ~/.config/mibot/selectors/meet.json
+```
+
+Each override key (`participantNames`, `activeSpeaker`) is an ordered fallback
+list; a specified key replaces the default, an omitted key keeps it. See
+[`selectors/README.md`](selectors/README.md) for the full format.
+
 ## CLI commands
 
 | Command | Description |
