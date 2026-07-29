@@ -1,7 +1,7 @@
 import type { Page } from 'playwright';
 import fs from 'fs';
 import { startRecording, stopRecording } from './recorder.js';
-import { flushAudioToDisk } from './webrtc-capture.js';
+import { flushAudioToDisk, finalizeAudioDrain } from './webrtc-capture.js';
 
 /**
  * R2 (AR3) — a per-bot audio capture session.
@@ -24,8 +24,10 @@ export interface CaptureSessionDeps {
   audioPath: string;
   /** Start ffmpeg recording to audioPath; returns a handle whose stop() finalizes it. */
   startRecording: (audioPath: string) => RecorderHandle;
-  /** Flush WebRTC-captured audio to the given path. Returns true if bytes were written. */
+  /** Periodic flush of WebRTC-captured audio. Returns true if bytes were written. */
   flush: (webrtcAudioPath: string) => Promise<boolean>;
+  /** Final stop-and-drain at meeting end (AU3 tail). Defaults to `flush` if omitted. */
+  finalFlush?: (webrtcAudioPath: string) => Promise<boolean>;
   setInterval: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
   clearInterval: (h: ReturnType<typeof setInterval>) => void;
   /** Size in bytes of a path (0 if missing). */
@@ -75,7 +77,9 @@ export class CaptureSession {
     }
     await this.flushChain;
     if (this.recorder) { await this.recorder.stop(); this.recorder = null; }
-    try { await this.deps.flush(this.webrtcAudioPath); } catch {}
+    // AU3: the final drain stops the MediaRecorder and captures the tail, not just the periodic buffer.
+    const finalFlush = this.deps.finalFlush ?? this.deps.flush;
+    try { await finalFlush(this.webrtcAudioPath); } catch {}
 
     if (this.deps.fileSize(this.webrtcAudioPath) > MIN_WEBRTC_BYTES) {
       this.deps.copyFile(this.webrtcAudioPath, this.audioPath);
@@ -85,10 +89,28 @@ export class CaptureSession {
 
 /** Production factory: a CaptureSession wired to the real recorder/webrtc/fs for a given page. */
 export function createCaptureSession(page: Page, audioPath: string): CaptureSession {
+  // AU11: the flush catch used to be silent — the exact reason P0/P1 silent-capture failures
+  // stayed invisible. Log the first failure and every 4th consecutive one thereafter.
+  let consecutiveFailures = 0;
+  const loggedFlush = async (p: string): Promise<boolean> => {
+    try {
+      const ok = await flushAudioToDisk(page, p);
+      consecutiveFailures = 0;
+      return ok;
+    } catch (err) {
+      consecutiveFailures++;
+      if (consecutiveFailures === 1 || consecutiveFailures % 4 === 0) {
+        console.error(`[mibot] audio flush failed (${consecutiveFailures} consecutive): ${(err as Error).message}`);
+      }
+      return false;
+    }
+  };
+
   return new CaptureSession({
     audioPath,
     startRecording: (p) => { const ff = startRecording(p); return { stop: () => stopRecording(ff) }; },
-    flush: (p) => flushAudioToDisk(page, p),
+    flush: loggedFlush,
+    finalFlush: (p) => finalizeAudioDrain(page, p),
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (h) => clearInterval(h),
     fileSize: (p) => (fs.existsSync(p) ? fs.statSync(p).size : 0),

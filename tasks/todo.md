@@ -105,7 +105,7 @@
 ## Wave 4 — Audio lifecycle (ONE coordinated PR, OQ1: R4→R3→R2)
 - [x] FA/R4 — WebRTC hook via addInitScript, single injector (AR5) · blockedBy: —
 - [x] R3 — managed ffmpeg wrapper (error/exit/SIGKILL) · blockedBy: FA
-- [ ] R2 — per-bot capture sessions, no singletons (AR3) · blockedBy: R3
+- [x] R2 — per-bot capture sessions, no singletons (AR3) · blockedBy: R3
 - [x] AU1 P0 — Zoom iframe produces no WebRTC audio · blockedBy: FA
 - [ ] DRAIN — AU3/AU8/AU12 one drain protocol (OQ5 stop-and-drain) · blockedBy: FA
 - [ ] AU10 P2 — never overwrite longer capture (ffprobe duration) · blockedBy: R2

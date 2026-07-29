@@ -1,5 +1,6 @@
-import type { Page, BrowserContext } from 'playwright';
+import type { Page, BrowserContext, Frame } from 'playwright';
 import fs from 'fs';
+import { drainAudioOnce } from './audio-drain.js';
 
 /**
  * FA/R4 — the ONE WebRTC audio-capture hook, self-contained so it can be installed via
@@ -80,86 +81,101 @@ export async function installAudioCapture(context: BrowserContext): Promise<void
   console.error('[mibot] WebRTC audio capture hook installed on context (all frames)');
 }
 
-/**
- * Stop recording and extract audio data from the page.
- * Returns base64-encoded webm audio.
- */
-export async function extractAudio(page: Page): Promise<string> {
-  // Try all frames
-  for (const frame of [page, ...page.frames()]) {
-    try {
-      const result = await frame.evaluate(() => {
-        // Clean up the flush interval
-        if ((window as any).__mibotFlushInterval) {
-          clearInterval((window as any).__mibotFlushInterval);
-          (window as any).__mibotFlushInterval = null;
-        }
-        return new Promise<string>((resolve) => {
-          const recorder = (window as any).__mibotRecorder as MediaRecorder;
-          const chunks = (window as any).__mibotChunks as Blob[];
+// ── Drain protocol (DRAIN: AU3/AU7/AU8/AU12) ────────────────────────────
+//
+// The in-page read is NON-destructive: it peeks and encodes the pending flushed chunks but
+// leaves them in `__mibotFlushedChunks`. Node appends the bytes to disk and only THEN calls the
+// ack step, which removes exactly the chunks that were read (`splice(0, count)` — new chunks that
+// arrived mid-transfer sit after them and survive). If the append throws (ENOSPC) the ack never
+// runs, so the window is retried next tick instead of being lost (AU8). The FileReader carries an
+// onerror/onabort so a read failure resolves to '' rather than hanging frame.evaluate (AU7).
 
-          if (!recorder || !chunks) { resolve(''); return; }
+const READ_TIMEOUT_MS = 10000;
 
-          // Stop all sources
-          const sources = (window as any).__mibotSources || [];
-          for (const s of sources) { try { s.disconnect(); } catch {} }
+/** Peek+encode pending flushed chunks in one frame WITHOUT removing them. */
+async function readPendingChunks(frame: Frame): Promise<{ b64: string; count: number }> {
+  return frame.evaluate(() => {
+    const flushed = (window as any).__mibotFlushedChunks as Blob[] | undefined;
+    if (!flushed || flushed.length === 0) return { b64: '', count: 0 };
+    const count = flushed.length;
+    const snapshot = flushed.slice(0, count); // copy — do NOT splice (non-destructive read)
+    return new Promise<{ b64: string; count: number }>((resolve) => {
+      const blob = new Blob(snapshot, { type: 'audio/webm' });
+      const reader = new FileReader();
+      reader.onload = () => resolve({ b64: (reader.result as string).split(',')[1] || '', count });
+      reader.onerror = () => resolve({ b64: '', count: 0 }); // AU7: never hang on read failure
+      reader.onabort = () => resolve({ b64: '', count: 0 });
+      reader.readAsDataURL(blob);
+    });
+  });
+}
 
-          if (recorder.state === 'recording') {
-            recorder.onstop = async () => {
-              const blob = new Blob(chunks, { type: 'audio/webm' });
-              const buffer = await blob.arrayBuffer();
-              const bytes = new Uint8Array(buffer);
-              let binary = '';
-              for (let i = 0; i < bytes.length; i++) {
-                binary += String.fromCharCode(bytes[i]);
-              }
-              resolve(btoa(binary));
-            };
-            recorder.stop();
-          } else {
-            resolve('');
-          }
-        });
-      });
+/** Remove the first `count` (already-persisted) chunks from a frame's flushed buffer. */
+async function ackChunks(frame: Frame, count: number): Promise<void> {
+  await frame.evaluate((n) => {
+    const flushed = (window as any).__mibotFlushedChunks as Blob[] | undefined;
+    if (flushed) flushed.splice(0, n);
+  }, count);
+}
 
-      if (result) return result;
-    } catch {}
-  }
-  return '';
+/** Drain one frame once via the two-phase protocol. Returns true if bytes were appended. */
+async function drainFrame(frame: Frame, outputPath: string): Promise<boolean> {
+  const result = await drainAudioOnce({
+    readEncoded: () => readPendingChunks(frame),
+    append: (buf) => fs.appendFileSync(outputPath, buf),
+    ack: (count) => ackChunks(frame, count),
+    timeoutMs: READ_TIMEOUT_MS,
+  });
+  return result.appended;
 }
 
 /**
- * Periodically flush captured audio to disk. Call every 30s during the meeting.
- * Appends new chunks to the file so audio is never lost on crash.
+ * Periodic flush during the meeting. Drains the FIRST frame that has pending audio (AU12: a
+ * single meeting has one recorder frame; appending two frames' streams to one file yields
+ * invalid webm, so we commit to the first frame with data rather than concatenating).
  */
 export async function flushAudioToDisk(page: Page, outputPath: string): Promise<boolean> {
-  for (const frame of [page, ...page.frames()]) {
+  for (const frame of [page.mainFrame(), ...page.frames()]) {
     try {
-      const chunkB64 = await frame.evaluate(() => {
-        const flushed = (window as any).__mibotFlushedChunks as Blob[] | undefined;
-        if (!flushed || flushed.length === 0) return '';
-
-        // Take all flushed chunks and encode
-        const chunks = flushed.splice(0);
-        return new Promise<string>((resolve) => {
-          const blob = new Blob(chunks, { type: 'audio/webm' });
-          const reader = new FileReader();
-          reader.onload = () => {
-            const base64 = (reader.result as string).split(',')[1] || '';
-            resolve(base64);
-          };
-          reader.readAsDataURL(blob);
-        });
-      });
-
-      if (chunkB64) {
-        const buf = Buffer.from(chunkB64, 'base64');
-        fs.appendFileSync(outputPath, buf);
-        return true;
-      }
-    } catch {}
+      if (await drainFrame(frame, outputPath)) return true;
+    } catch { /* AU11 logs at the audio.ts layer; keep trying other frames */ }
   }
   return false;
+}
+
+/**
+ * AU3 — single stop-and-drain at meeting end. Stops the MediaRecorder, awaits its final
+ * `ondataavailable` so the last ~0-6s tail lands in the buffer, moves it into the flushed buffer,
+ * then drains. Without this the tail of every meeting was dropped.
+ */
+export async function finalizeAudioDrain(page: Page, outputPath: string): Promise<boolean> {
+  let any = false;
+  for (const frame of [page.mainFrame(), ...page.frames()]) {
+    try {
+      // Stop the recorder and fold any un-flushed tail into __mibotFlushedChunks.
+      await frame.evaluate(() => {
+        const w = window as any;
+        if (w.__mibotFlushInterval) { clearInterval(w.__mibotFlushInterval); w.__mibotFlushInterval = null; }
+        const recorder = w.__mibotRecorder as MediaRecorder | undefined;
+        const chunks = w.__mibotChunks as Blob[] | undefined;
+        const flushed = w.__mibotFlushedChunks as Blob[] | undefined;
+        if (!recorder || !chunks || !flushed) return;
+        return new Promise<void>((resolve) => {
+          const fold = () => { flushed.push(...chunks.splice(0)); resolve(); };
+          if (recorder.state === 'recording') {
+            recorder.onstop = () => fold();
+            try { recorder.requestData(); } catch {}
+            recorder.stop();
+            setTimeout(() => fold(), 3000); // safety: don't wait forever for onstop
+          } else {
+            fold();
+          }
+        });
+      });
+      if (await drainFrame(frame, outputPath)) any = true;
+    } catch { /* best-effort per frame */ }
+  }
+  return any;
 }
 
 /** Save extracted audio to a file. */
