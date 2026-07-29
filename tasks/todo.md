@@ -55,7 +55,7 @@
 - [x] C19 P1 — dup-row rejoin loop: reuse scheduled row (bot.ts:50) · blockedBy: F2
 - [x] D6 P2 — UNIQUE index + dedupe migration · blockedBy: C19 · **gate §5.1 (seeded-dups proof)**
 - [x] CA3 P2 — race dedup: INSERT … ON CONFLICT DO NOTHING · blockedBy: D6
-- [ ] CA4 P2 — cross-provider dedup (join_url + time) · blockedBy: D6, AR7
+- [x] CA4 P2 — cross-provider dedup (join_url + time) · blockedBy: D6, AR7
 - [x] D3 P1 — stale-heartbeat false-kill · blockedBy: F6
 - [x] D4 P2 — orphan recordings row in same txn · blockedBy: F6, F2
 - [x] D5 P2 — timezone validation at load · blockedBy: F3
@@ -75,15 +75,15 @@
 - [x] T6 P2 — maxBuffer on transcribe CLI · blockedBy: F4
 - [x] T7 P2 — parse output_dir as JSON not regex · blockedBy: F4
 - [x] T8 P3 — deepscript empty-dir warn · blockedBy: F4
-- [ ] AR7 — calendar ingest seam (Provider → normalized Meeting[]) · blockedBy: F4
-- [ ] CA1 P1 — exit-1 stdout parsed as success · blockedBy: F4, AR7
-- [ ] CA2 P1 — no update/cancel of changed events · blockedBy: AR7
-- [ ] CA5 P2 — candidate order: joinUrl first · blockedBy: AR7
-- [ ] CA6 P2 — HTML-entity-decode body URL · blockedBy: AR7
-- [ ] CA8 P2 — skip all-day (no dateTime) · blockedBy: AR7
-- [ ] CA9 P3 — timezone at ingest (needs-repro first) · blockedBy: AR7
-- [ ] CA10 P3 — fmtTime offset datetimes (subsumed by R12) · blockedBy: R12
-- [ ] CA11 P3 — GWS_PATH set-but-missing + hardcoded default · blockedBy: —
+- [x] AR7 — calendar ingest seam (Provider → normalized Meeting[]) · blockedBy: F4
+- [x] CA1 P1 — exit-1 stdout parsed as success · blockedBy: F4, AR7
+- [x] CA2 P1 — no update/cancel of changed events · blockedBy: AR7
+- [x] CA5 P2 — candidate order: joinUrl first · blockedBy: AR7
+- [x] CA6 P2 — HTML-entity-decode body URL · blockedBy: AR7
+- [x] CA8 P2 — skip all-day (no dateTime) · blockedBy: AR7
+- [BLOCKED] CA9 P3 — timezone at ingest (needs-repro first) · blockedBy: AR7 — no repro fixture; logged in opportunities.md
+- [x] CA10 P3 — fmtTime offset datetimes (subsumed by R12) · blockedBy: R12
+- [x] CA11 P3 — GWS_PATH set-but-missing + hardcoded default · blockedBy: —
 
 ## Wave 3 — Meeting lifecycle
 - [ ] M1+M3 P0/P1 — frozen consecutiveEmptyPolls + fabricated names, **ONE task**, aria-count→leave-gate · blockedBy: F5

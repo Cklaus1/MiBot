@@ -18,6 +18,18 @@ _(none yet — appended during the build loop)_
   intermittent "1 failed" under full-suite concurrency. Fixed mid-build (commit ad4808a):
   getDb() honors `MIBOT_DB_PATH`, test/setup.ts gives each test file a temp DB. 5× clean.
 
+## Needs-repro (deferred until a reproduction exists)
+- [BUG] CA9 `calendar.ts` M365 ingest — `event.start.timeZone` is discarded while the bare
+  `dateTime` is stored. Graph returns UTC by default (no `Prefer: outlook.timezone` header is
+  sent), so this only misbehaves if ms365-cli sets a timezone preference — unverified. Fix if
+  reproduced: convert `{dateTime,timeZone}` → UTC ISO in `m365ToRaw`. The AR7 seam gives it a
+  single home (one line in `m365ToRaw`). P3 · needs-repro. Not fixed this run (no fixture).
+- [BUG] CA2 empty-window semantics — a provider returning a valid-but-empty event list cancels
+  ALL its scheduled meetings. This is intentional (empty window = nothing scheduled) and safe
+  because `parseEventsPayload` throws on error payloads (so a failed sync never reaches the
+  cancel step), but if a provider ever returns empty on transient partial failure, add a
+  "non-empty-last-time" guard. Watch item, not a fix.
+
 ## Carried architecture items (out of current scope, tracked)
 - [ARCH] control channel — no auth; local-only `0600` socket for now (hardening OQ7 /
   arch AQ4). Becomes mandatory if an `eval`/arbitrary-JS command is ever added (C16 removes
