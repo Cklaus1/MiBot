@@ -3,18 +3,31 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
 import { updateRecording, type Participant, type SpeakerSegment } from './db.js';
+import { RECORDING_STATUS, type RecordingStatus } from './status.js';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Transcribe a recording and return the resulting recording-status *outcome*.
+ * R6: transcribe no longer writes the recording's status row itself — it returns
+ * the outcome so the single caller can reconcile it (C7) against the current status.
+ * Content side-effects (transcript_path) are still written here; only the status
+ * decision is handed back.
+ *
+ * Returns:
+ *   'no_audio'          — nothing to transcribe (missing/empty file)
+ *   'transcribe_failed' — audioscript stage failed
+ *   'done'              — transcription succeeded (deepscript analysis is best-effort)
+ */
 export async function transcribe(
   recordingId: number,
   audioPath: string,
   participants: Participant[],
   speakerTimeline: SpeakerSegment[],
-): Promise<void> {
+): Promise<RecordingStatus> {
   if (!fs.existsSync(audioPath) || fs.statSync(audioPath).size === 0) {
     console.error('[mibot] No audio to transcribe');
-    return;
+    return RECORDING_STATUS.NO_AUDIO;
   }
 
   // Run audioscript from the audio file's directory (it requires relative paths)
@@ -54,21 +67,22 @@ export async function transcribe(
   } catch (err) {
     const stderr = (err as any).stderr || '';
     console.error(`[mibot] Transcription failed: ${(err as Error).message}${stderr ? '\n' + stderr : ''}`);
-    updateRecording(recordingId, { status: 'transcribe_failed' });
-    return;
+    return RECORDING_STATUS.TRANSCRIBE_FAILED;
   }
 
   // ── Stage 2: DeepScript (analysis + action items) ───────────────────
+  // Transcription (stage 1) already succeeded past this point, so the recording
+  // outcome is 'done' regardless of whether the best-effort analysis stage runs.
   if (!transcriptJson || !fs.existsSync(transcriptJson)) {
     console.error('[mibot] No transcript JSON for DeepScript — skipping analysis');
-    return;
+    return RECORDING_STATUS.DONE;
   }
 
   try {
     await execFileAsync('which', ['deepscript'], { timeout: 3000 });
   } catch {
     console.error('[mibot] deepscript not installed — skipping analysis');
-    return;
+    return RECORDING_STATUS.DONE;
   }
 
   console.error('[mibot] Stage 2: Analyzing via deepscript...');
@@ -105,6 +119,8 @@ export async function transcribe(
     console.error(`[mibot] DeepScript analysis failed: ${(err as Error).message}${stderr ? '\n' + stderr.substring(0, 200) : ''}`);
     // Don't fail the recording — transcription succeeded, analysis is a bonus
   }
+
+  return RECORDING_STATUS.DONE;
 }
 
 /**
