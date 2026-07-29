@@ -111,18 +111,19 @@ export function insertMeeting(m: {
   recurrence_id?: string;
 }): Meeting {
   const db = getDb();
+  // AR6: stamp heartbeat at insert so a freshly-created meeting is immediately "live".
   const stmt = db.prepare(`
     INSERT INTO meetings (title, platform, join_url, start_time, end_time,
       calendar_event_id, organizer, organizer_email, location, description,
-      attendees, is_recurring, recurrence_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      attendees, is_recurring, recurrence_id, heartbeat)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
     m.title, m.platform, m.join_url, m.start_time, m.end_time ?? null,
     m.calendar_event_id ?? null, m.organizer ?? null, m.organizer_email ?? null,
     m.location ?? null, m.description ?? null,
     m.attendees ? JSON.stringify(m.attendees) : null,
-    m.is_recurring ? 1 : 0, m.recurrence_id ?? null,
+    m.is_recurring ? 1 : 0, m.recurrence_id ?? null, new Date().toISOString(),
   );
   return db.prepare('SELECT * FROM meetings WHERE id = ?').get(result.lastInsertRowid) as Meeting;
 }
@@ -144,6 +145,12 @@ export function updateMeeting(id: number, updates: Record<string, unknown>): voi
     vals.push(val);
   }
   if (sets.length === 0) return;
+  // AR6: every meeting-row write refreshes the heartbeat in the SAME statement, so any
+  // status transition atomically proves liveness. Skip only if the caller set it itself.
+  if (!('heartbeat' in updates)) {
+    sets.push('heartbeat = ?');
+    vals.push(new Date().toISOString());
+  }
   vals.push(id);
   db.prepare(`UPDATE meetings SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
 }
