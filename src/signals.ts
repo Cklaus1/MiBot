@@ -2,56 +2,9 @@ import { type Page } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 import { OccurrenceDeduper, risingEdgeReactions, HandRaiseTracker } from './signal-dedup.js';
-
-/**
- * Compute a perceptual hash of a JPEG image buffer.
- * Extracts a fingerprint by sampling the compressed data at structured intervals,
- * skipping the JPEG header (first 2KB) which contains metadata that varies.
- * Returns a hex string that's stable for visually identical content.
- */
-function perceptualHash(buf: Buffer): string {
-  // Skip JPEG header/metadata (typically first ~2KB), hash the image data
-  const start = Math.min(2048, Math.floor(buf.length * 0.1));
-  const end = buf.length;
-  const dataLen = end - start;
-  if (dataLen < 100) return buf.length.toString(16); // Too small, use size
-
-  // Sample 256 evenly-spaced bytes from the image data and build a hash
-  const step = Math.max(1, Math.floor(dataLen / 256));
-  let hash = 0;
-  for (let i = start; i < end; i += step) {
-    // Simple but effective: rotate and XOR
-    hash = ((hash << 5) - hash + buf[i]) | 0;
-  }
-  return hash.toString(16);
-}
-
-/**
- * Compare two image buffers for visual similarity.
- * Uses perceptual hashing (skips JPEG headers) + size comparison.
- * threshold: 0.08 = 8%
- */
-function isSimilar(a: Buffer, b: Buffer, threshold: number): boolean {
-  // Quick check: if sizes differ by more than 15%, definitely different
-  const sizeDiff = Math.abs(a.length - b.length) / Math.max(a.length, b.length);
-  if (sizeDiff > 0.15) return false;
-
-  // Compare perceptual hashes
-  if (perceptualHash(a) === perceptualHash(b)) return true;
-
-  // Fallback: sample image data bytes (skip headers) and compare
-  const start = Math.min(2048, Math.floor(Math.min(a.length, b.length) * 0.1));
-  const len = Math.min(a.length, b.length) - start;
-  const samples = Math.min(500, len);
-  const step = Math.max(1, Math.floor(len / samples));
-  let diffCount = 0;
-
-  for (let i = start; i < start + len; i += step) {
-    if (a[i] !== b[i]) diffCount++;
-  }
-
-  return (diffCount / samples) < threshold;
-}
+// M12/M16: one shared, correctly-normalized screenshot-similarity check (was duplicated inline
+// here and in bot.ts, both dividing the diff count by `samples` instead of the actual count).
+import { isSimilarImage } from './image-similarity.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -370,7 +323,7 @@ export class SignalTracker {
       // Compare raw JPEG bytes — sample evenly across the file and measure
       // the byte-level difference ratio. Under 2% = same slide.
       const currentBytes = fs.readFileSync(filepath);
-      if (this.lastScreenshotBytes && isSimilar(this.lastScreenshotBytes, currentBytes, 0.08)) {
+      if (this.lastScreenshotBytes && isSimilarImage(this.lastScreenshotBytes, currentBytes, 0.08)) {
         fs.unlinkSync(filepath);
         return; // Same slide, don't count it
       }

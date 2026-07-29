@@ -97,10 +97,10 @@
 - [x] M5 P1 — hand-as-reaction spam · blockedBy: F9
 - [x] M10 P2 — hand re-raise overwrite · blockedBy: F9
 - [ ] M11 P2 — Meet chat sender closest() (needs-repro) · blockedBy: —
-- [ ] M12 P3 — isSimilar divide-by-samples · blockedBy: —
+- [x] M12 P3 — isSimilar divide-by-samples · blockedBy: —
 - [ ] M13 P3 — presenter handoff within poll gap · blockedBy: —
 - [x] M14 P3 — hardcoded /tmp/teams-ended.png · blockedBy: —
-- [ ] M16 P3 — hoist shared isSimilar (fixes M12 both places) · blockedBy: M12
+- [x] M16 P3 — hoist shared isSimilar (fixes M12 both places) · blockedBy: M12
 
 ## Wave 4 — Audio lifecycle (ONE coordinated PR, OQ1: R4→R3→R2)
 - [ ] FA/R4 — WebRTC hook via addInitScript, single injector (AR5) · blockedBy: —

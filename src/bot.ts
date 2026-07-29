@@ -15,6 +15,7 @@ import { PlaybookEngine, CamofoxPlaybookEngine } from './playbook.js';
 import { ControlChannel } from './control.js';
 import { waitForMeetingEnd } from './meeting.js';
 import { LeavePolicy } from './leave-policy.js';
+import { isSimilarImage } from './image-similarity.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
 import { transcribe } from './transcribe.js';
 import { launchCamofox, type CamofoxPage } from './camofox.js';
@@ -604,7 +605,7 @@ async function monitorCamofoxMeeting(
         if (Date.now() - lastScreenshotTime >= 30000) {
           const screenshotBuf = await page.screenshot({ path: undefined });
           if (screenshotBuf.length > 1000) {
-            if (!lastScreenshotBuf || !isSimilarBuffer(lastScreenshotBuf, screenshotBuf)) {
+            if (!lastScreenshotBuf || !isSimilarImage(lastScreenshotBuf, screenshotBuf, 0.08)) {
               const ssPath = path.join(screenshotDir, `share-${Date.now()}.jpg`);
               fs.writeFileSync(ssPath, screenshotBuf);
               screenshotPaths.push(ssPath);
@@ -693,21 +694,6 @@ async function monitorCamofoxMeeting(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
-
-/** Quick buffer similarity check — skip headers, sample data bytes. */
-function isSimilarBuffer(a: Buffer, b: Buffer): boolean {
-  const sizeDiff = Math.abs(a.length - b.length) / Math.max(a.length, b.length);
-  if (sizeDiff > 0.15) return false;
-  const start = Math.min(2048, Math.floor(Math.min(a.length, b.length) * 0.1));
-  const len = Math.min(a.length, b.length) - start;
-  const samples = Math.min(500, len);
-  const step = Math.max(1, Math.floor(len / samples));
-  let diffCount = 0;
-  for (let i = start; i < start + len; i += step) {
-    if (a[i] !== b[i]) diffCount++;
-  }
-  return (diffCount / samples) < 0.08;
-}
 
 /** Write metadata sidecar JSON file. */
 function writeMetadata(
