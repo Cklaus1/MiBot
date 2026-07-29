@@ -66,15 +66,15 @@
 ## Wave 2 — Transcription + Calendar
 - [x] R6 — transcribe() returns outcome enum · blockedBy: F1
 - [x] T1 P1 — failed/skipped recorded as done · blockedBy: R6
-- [ ] T2 P1 — exit-0 with no output = success · blockedBy: R6, F4
+- [x] T2 P1 — exit-0 with no output = success · blockedBy: R6, F4
 - [x] C5 P1 — camofox path never transcribes · blockedBy: R6, F6
 - [x] C7 P2 — catch clobbers terminal status · blockedBy: R6, F1
-- [ ] T3 P1 — --db absolute path · blockedBy: F4
-- [ ] T4 P2 — label calls swallow errors + no timeout · blockedBy: F4
-- [ ] T5 P2 — option-injection via display name (`--`) · blockedBy: F4
-- [ ] T6 P2 — maxBuffer on transcribe CLI · blockedBy: F4
-- [ ] T7 P2 — parse output_dir as JSON not regex · blockedBy: F4
-- [ ] T8 P3 — deepscript empty-dir warn · blockedBy: F4
+- [x] T3 P1 — --db absolute path · blockedBy: F4
+- [x] T4 P2 — label calls swallow errors + no timeout · blockedBy: F4
+- [x] T5 P2 — option-injection via display name (`--`) · blockedBy: F4
+- [x] T6 P2 — maxBuffer on transcribe CLI · blockedBy: F4
+- [x] T7 P2 — parse output_dir as JSON not regex · blockedBy: F4
+- [x] T8 P3 — deepscript empty-dir warn · blockedBy: F4
 - [ ] AR7 — calendar ingest seam (Provider → normalized Meeting[]) · blockedBy: F4
 - [ ] CA1 P1 — exit-1 stdout parsed as success · blockedBy: F4, AR7
 - [ ] CA2 P1 — no update/cancel of changed events · blockedBy: AR7
