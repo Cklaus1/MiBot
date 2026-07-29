@@ -1,14 +1,28 @@
 import { type Page } from 'playwright';
+import os from 'os';
+import path from 'path';
 import { type Participant, type SpeakerSegment } from './db.js';
 import { isBot, loadConfig } from './config.js';
 import { SignalTracker } from './signals.js';
 import { loadSelectors } from './selectors.js';
+import { LeavePolicy } from './leave-policy.js';
+
+/** M14: platform+timestamp debug screenshot path so concurrent meetings don't clobber. */
+function endedScreenshotPath(platform: string): string {
+  return path.join(os.tmpdir(), `mibot-${platform}-ended-${Date.now()}.png`);
+}
 
 // ── Types ─────────────────────────────────────────────────────────────
 
 export interface ParticipantState {
   humans: string[];
   bots: string[];
+  /**
+   * Roster count from the UI when individual names could NOT be scraped (selector churn).
+   * `undefined` when names were scraped successfully. Never used to fabricate names — the
+   * caller subtracts self via deriveHumanCount() and feeds the result to the leave gate.
+   */
+  rosterCount?: number;
 }
 
 // ── Participant scraping ──────────────────────────────────────────────
@@ -16,7 +30,7 @@ export interface ParticipantState {
 /** Scrape current participant names from the meeting UI. */
 export async function getParticipants(page: Page, platform: string): Promise<ParticipantState> {
   const selectors = loadSelectors(platform).participantNames;
-  const names: string[] = await page.evaluate((sels) => {
+  const scraped = await page.evaluate((sels) => {
     const results: string[] = [];
 
     for (const sel of sels) {
@@ -26,21 +40,23 @@ export async function getParticipants(page: Page, platform: string): Promise<Par
       });
     }
 
-    // Fallback: try aria labels that mention participant counts
-    const countEl = document.querySelector('[aria-label*="participant"], [data-tid="roster-count"]');
-    if (countEl) {
-      const match = (countEl.getAttribute('aria-label') || '').match(/(\d+)/);
-      if (match && results.length === 0) {
-        // Can't get names, but know the count
-        for (let i = 0; i < parseInt(match[1]); i++) results.push(`participant-${i}`);
+    // Fallback: try aria labels that mention participant counts. We return the COUNT,
+    // never fabricated names (M3) — fake "participant-N" names fail isBot() and were
+    // counted as humans, so the bot could never leave.
+    let rosterCount: number | undefined;
+    if (results.length === 0) {
+      const countEl = document.querySelector('[aria-label*="participant"], [data-tid="roster-count"]');
+      if (countEl) {
+        const match = (countEl.getAttribute('aria-label') || '').match(/(\d+)/);
+        if (match) rosterCount = parseInt(match[1]);
       }
     }
 
-    return [...new Set(results)];
+    return { names: [...new Set(results)], rosterCount };
   }, selectors);
 
   // Normalize whitespace in names before dedup
-  const normalized = names.map(n => n.replace(/\s+/g, ' ').trim()).filter(n => n.length > 0);
+  const normalized = scraped.names.map(n => n.replace(/\s+/g, ' ').trim()).filter(n => n.length > 0);
   const uniqueNames = [...new Set(normalized)];
 
   const humans: string[] = [];
@@ -54,7 +70,21 @@ export async function getParticipants(page: Page, platform: string): Promise<Par
     }
   }
 
-  return { humans, bots };
+  return { humans, bots, rosterCount: scraped.rosterCount };
+}
+
+/**
+ * Derive the human count to feed the leave gate (M3).
+ *
+ * Prefers scraped human names. Only when NO names could be scraped does it fall back to
+ * `rosterCount − 1` (subtracting the bot itself), clamped at 0. This never fabricates
+ * names and never lets a stale roster count override a real human that IS present — which
+ * would invert M1 into leaving an active meeting (data loss).
+ */
+export function deriveHumanCount(state: ParticipantState): number {
+  if (state.humans.length > 0) return state.humans.length;
+  if (state.rosterCount !== undefined) return Math.max(0, state.rosterCount - 1);
+  return 0;
 }
 
 // ── Active speaker detection ──────────────────────────────────────────
@@ -194,31 +224,40 @@ export async function waitForMeetingEnd(
   signalTracker: SignalTracker,
 ): Promise<{ participants: Participant[]; speakerTimeline: SpeakerSegment[] }> {
   const maxMs = config.maxDurationHours * 60 * 60 * 1000;
-  const aloneMs = config.aloneTimeoutMinutes * 60 * 1000;
-  const graceMs = config.leaveGracePeriodSeconds * 1000;
-
   const startTime = Date.now();
-  let aloneStart: number | null = null;
-  let graceStart: number | null = null;
   let lastHumanCount = -1;
-  let consecutiveEmptyPolls = 0;
+
+  // All leave logic lives in the pure, unit-tested LeavePolicy (M1/M9/M7). The loop just
+  // feeds it observations. leaveButtonMissesToEnd=2 preserves the debounce; the first
+  // MIN_CALL_SECONDS is a warm-up where we DON'T act on a missing leave button, but we DO
+  // still track participants/speakers/signals (M6: the old `continue` dropped early data).
+  const policy = new LeavePolicy(
+    {
+      minHumansToStay: config.minHumansToStay,
+      aloneTimeoutMs: config.aloneTimeoutMinutes * 60 * 1000,
+      leaveGracePeriodMs: config.leaveGracePeriodSeconds * 1000,
+      maxDurationMs: maxMs,
+      leaveButtonMissesToEnd: 2,
+      emptyPollsToTrigger: 2,
+    },
+    startTime,
+  );
 
   // Track all participants and active speaker over time
   const participantMap = new Map<string, Participant>();
   const speakerTracker = new SpeakerTracker();
 
-  const MIN_CALL_SECONDS = 60; // Don't check for "ended" in the first 60 seconds
+  const MIN_CALL_SECONDS = 60; // Warm-up: don't ACT on "ended" in the first 60 seconds
 
   while (Date.now() - startTime < maxMs) {
     await page.waitForTimeout(5000);
+    const inWarmup = Date.now() - startTime < MIN_CALL_SECONDS * 1000;
 
-    // Check if meeting ended (but not in the first few seconds — avoid false positives)
-    if (Date.now() - startTime < MIN_CALL_SECONDS * 1000) continue;
-
+    // Detect the Leave button (most reliable end signal). Page-closed → treat as gone.
+    let leaveVisible = false;
+    let pageClosed = false;
     try {
-      // Only check if the Leave button is still visible — most reliable signal.
-      // Text heuristics ("meeting has ended") match hidden DOM elements during active calls.
-      const leaveVisible = await page.evaluate((p) => {
+      leaveVisible = await page.evaluate((p) => {
         if (p === 'meet') return !!document.querySelector('[aria-label="Leave call"]');
         if (p === 'teams') {
           return !!document.querySelector('button:has([data-tid="hangup-button"]), button[aria-label="Leave"], #hangup-button');
@@ -226,20 +265,18 @@ export async function waitForMeetingEnd(
         // Zoom
         return !!document.querySelector('[aria-label="Leave"], .footer__leave-btn');
       }, platform);
-
-      if (!leaveVisible) {
-        // Take a screenshot for debugging before deciding
-        await page.screenshot({ path: '/tmp/teams-ended.png' }).catch(() => {});
-        console.error('[mibot] Leave button gone — meeting ended');
-        break;
-      }
     } catch {
+      // M2: page/browser closed mid-meeting — end via the normal finalize path, don't throw.
+      pageClosed = true;
+    }
+    if (pageClosed) {
       console.error('[mibot] Page closed — meeting ended');
       break;
     }
 
     // Track participants — process all names in a single pass to avoid classification race
-    const { humans, bots } = await getParticipants(page, platform).catch(() => ({ humans: [] as string[], bots: [] as string[] }));
+    const { humans, bots, rosterCount } = await getParticipants(page, platform)
+      .catch(() => ({ humans: [] as string[], bots: [] as string[], rosterCount: undefined }));
     const allCurrent = new Map<string, boolean>(); // name → is_bot
     for (const name of humans) allCurrent.set(name, false);
     for (const name of bots) allCurrent.set(name, true); // bot classification wins on conflict
@@ -268,16 +305,10 @@ export async function waitForMeetingEnd(
     speakerTracker.update(speaker);
 
     // Track chat, reactions, hand raises, screen shares
-    await signalTracker.poll(page, platform);
+    await signalTracker.poll(page, platform).catch(() => {}); // M8: never let a poll crash end the meeting
 
-    const humanCount = humans.length;
-
-    // Track consecutive empty polls to avoid premature exit on single flaky scrape
-    if (humanCount === 0 && lastHumanCount > 0) {
-      consecutiveEmptyPolls++;
-    } else if (humanCount > 0) {
-      consecutiveEmptyPolls = 0;
-    }
+    // M3: feed roster-count-minus-self into the leave gate when names can't be scraped.
+    const humanCount = deriveHumanCount({ humans, bots, rosterCount });
 
     if (humanCount !== lastHumanCount) {
       const botStr = bots.length > 0 ? ` + ${bots.length} bot(s)` : '';
@@ -285,39 +316,20 @@ export async function waitForMeetingEnd(
       lastHumanCount = humanCount;
     }
 
-    // Alone timeout (require 2+ consecutive empty polls to trigger grace period)
-    if (humanCount <= config.minHumansToStay && consecutiveEmptyPolls >= 2) {
-      if (!aloneStart) {
-        aloneStart = Date.now();
-        console.error(`[mibot] Alone (${humanCount} humans, ${bots.length} bots). Waiting ${config.aloneTimeoutMinutes}m...`);
-      } else if (Date.now() - aloneStart > aloneMs) {
-        console.error('[mibot] Alone timeout — leaving');
-        break;
+    // During warm-up we track but never end on a missing button (avoid false-positive
+    // exits before the UI settles); pass hasLeaveButton:true so only real presence-based
+    // exits are suppressed by max-duration, which can't fire this early anyway.
+    const decision = policy.observe(
+      { humanCount, hasLeaveButton: inWarmup ? true : leaveVisible },
+      Date.now(),
+    );
+    if (decision.action === 'leave') {
+      if (decision.reason === 'meeting-ended') {
+        await page.screenshot({ path: endedScreenshotPath(platform) }).catch(() => {}); // M14
       }
+      console.error(`[mibot] Leaving — ${decision.reason}`);
+      break;
     }
-    if (humanCount > 0 && aloneStart) {
-      console.error('[mibot] People rejoined, resetting alone timer');
-      aloneStart = null;
-    }
-
-    // Grace period (only after 2+ consecutive empty polls)
-    if (humanCount === 0 && consecutiveEmptyPolls >= 2 && !graceStart) {
-      graceStart = Date.now();
-      console.error(`[mibot] All humans left. Grace period: ${config.leaveGracePeriodSeconds}s...`);
-    }
-    if (graceStart) {
-      if (humanCount > 0) {
-        console.error('[mibot] Someone rejoined, resetting grace period');
-        graceStart = null;
-      } else if (Date.now() - graceStart > graceMs) {
-        console.error('[mibot] Grace period expired — leaving');
-        break;
-      }
-    }
-  }
-
-  if (Date.now() - startTime >= maxMs) {
-    console.error(`[mibot] Max duration (${config.maxDurationHours}h) reached, leaving`);
   }
 
   // Finalize
