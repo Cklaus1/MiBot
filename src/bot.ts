@@ -10,7 +10,7 @@ import { RECORDING_STATUS } from './status.js';
 import { loadConfig, isBot } from './config.js';
 import { SignalTracker } from './signals.js';
 import { launchBrowser, stopRecording } from './recorder.js';
-import { injectAudioCaptureAllFrames } from './webrtc-capture.js';
+import { installAudioCapture } from './webrtc-capture.js';
 import { PlaybookEngine, CamofoxPlaybookEngine } from './playbook.js';
 import { ControlChannel } from './control.js';
 import { waitForMeetingEnd } from './meeting.js';
@@ -156,10 +156,9 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       browser = launch.browser;
       const page = launch.page;
 
-      await injectAudioCaptureAllFrames(page);
-      page.on('frameattached', async () => {
-        try { await injectAudioCaptureAllFrames(page); } catch {}
-      });
+      // FA/R4 (AU1/AU2): one hook, installed on the context so it runs in every frame
+      // (Zoom's iframe WebRTC) and survives navigation. Must precede the first goto.
+      await installAudioCapture(page.context());
 
       await page.goto(opts.url, { waitUntil: 'networkidle', timeout: 30000 }).catch((err: Error) => {
         console.error(`[mibot] Navigation timeout (continuing): ${err.message.substring(0, 80)}`);

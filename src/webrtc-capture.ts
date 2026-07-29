@@ -1,131 +1,83 @@
-import type { Page } from 'playwright';
+import type { Page, BrowserContext } from 'playwright';
 import fs from 'fs';
 
 /**
- * Inject a WebRTC audio capture hook into the page.
- * This intercepts RTCPeerConnection.addTrack / ontrack to capture
- * incoming audio streams from other meeting participants.
+ * FA/R4 — the ONE WebRTC audio-capture hook, self-contained so it can be installed via
+ * `context.addInitScript`. addInitScript runs this in the main frame AND every iframe, on
+ * every navigation, before any page script — which is exactly what audio capture needs:
  *
- * Must be called BEFORE the page joins the meeting (before WebRTC connections are made).
+ *  - AU1 (P0): Zoom's WebRTC lives in an iframe. The old code had a SEPARATE, drifted iframe
+ *    injector that never created `__mibotFlushedChunks`, so `flushAudioToDisk` read `undefined`
+ *    and returned '' for the whole meeting. One hook, run in every frame, ends the drift.
+ *  - AU2 (P1): a `page.evaluate()` hook is wiped by the first navigation (goto). An init script
+ *    is re-run on every document, so the hook is always present before RTCPeerConnection is used.
+ *
+ * References `window` explicitly (never a bundler closure) so it survives serialization into the
+ * page and is unit-testable by binding a fake `window`. Keep it dependency-free for the same
+ * reason — everything it needs is read off `window`.
  */
-export async function injectAudioCapture(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    // Skip if already injected in this context
-    if ((window as any).__mibotHooked) return;
-    (window as any).__mibotHooked = true;
+export function audioCaptureHook(): void {
+  const w = window as any;
+  if (w.__mibotHooked) return;
+  w.__mibotHooked = true;
 
-    // Hook RTCPeerConnection to capture incoming audio tracks
-    const origRTCPeerConnection = window.RTCPeerConnection;
+  const OrigRTC = w.RTCPeerConnection;
+  if (!OrigRTC) return; // no WebRTC in this frame (e.g. an ad/tracking iframe)
 
-    window.RTCPeerConnection = function(...args: any[]) {
-      const pc = new origRTCPeerConnection(...args);
+  const Wrapped = function (this: any, ...args: any[]) {
+    const pc = new OrigRTC(...args);
+    pc.addEventListener('track', (event: any) => {
+      if (!event.track || event.track.kind !== 'audio') return;
+      w.console?.log?.('[mibot-capture] Remote audio track received');
 
-      // When a remote track arrives (other person's audio)
-      pc.addEventListener('track', (event: RTCTrackEvent) => {
-        if (event.track.kind === 'audio') {
-          console.log('[mibot-capture] Remote audio track received');
+      if (!w.__mibotAudioCtx) {
+        const Ctx = w.AudioContext || w.webkitAudioContext;
+        w.__mibotAudioCtx = new Ctx();
+        w.__mibotDest = w.__mibotAudioCtx.createMediaStreamDestination();
+        w.__mibotSources = [];
+      }
+      const ctx = w.__mibotAudioCtx;
+      const dest = w.__mibotDest;
+      const stream = new w.MediaStream([event.track]);
+      const source = ctx.createMediaStreamSource(stream);
+      source.connect(dest);
+      w.__mibotSources.push(source);
 
-          // Connect this audio track to our recorder
-          if (!(window as any).__mibotAudioCtx) {
-            (window as any).__mibotAudioCtx = new AudioContext();
-            (window as any).__mibotDest = (window as any).__mibotAudioCtx.createMediaStreamDestination();
-            (window as any).__mibotSources = [];
-          }
+      if (!w.__mibotRecorder) {
+        const recorder = new w.MediaRecorder(dest.stream, {
+          mimeType: 'audio/webm;codecs=opus',
+          audioBitsPerSecond: 64000,
+        });
+        const chunks: any[] = [];
+        recorder.ondataavailable = (e: any) => { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.start(1000);
+        w.__mibotRecorder = recorder;
+        w.__mibotChunks = chunks;
 
-          const ctx = (window as any).__mibotAudioCtx as AudioContext;
-          const dest = (window as any).__mibotDest as MediaStreamAudioDestinationNode;
+        // The array flushAudioToDisk drains. ALWAYS created here — this is the AU1 fix.
+        w.__mibotFlushedChunks = [];
+        w.__mibotFlushInterval = w.setInterval(() => {
+          if (chunks.length > 0) w.__mibotFlushedChunks.push(...chunks.splice(0));
+        }, 5000);
+        w.console?.log?.('[mibot-capture] Audio recorder started');
+      }
+    });
+    return pc;
+  } as any;
 
-          // Create a source from the remote stream
-          const stream = new MediaStream([event.track]);
-          const source = ctx.createMediaStreamSource(stream);
-          source.connect(dest);
-          (window as any).__mibotSources.push(source);
-
-          // Start recorder if not already started
-          if (!(window as any).__mibotRecorder) {
-            const recorder = new MediaRecorder(dest.stream, {
-              mimeType: 'audio/webm;codecs=opus',
-              audioBitsPerSecond: 64000,
-            });
-            const chunks: Blob[] = [];
-            recorder.ondataavailable = (e) => {
-              if (e.data.size > 0) chunks.push(e.data);
-            };
-            recorder.start(1000);
-            (window as any).__mibotRecorder = recorder;
-            (window as any).__mibotChunks = chunks;
-
-            // Periodically flush chunks to a global array for incremental extraction
-            (window as any).__mibotFlushedChunks = [];
-            (window as any).__mibotFlushInterval = setInterval(() => {
-              if (chunks.length > 0) {
-                (window as any).__mibotFlushedChunks.push(...chunks.splice(0));
-              }
-            }, 5000);
-
-            console.log('[mibot-capture] Audio recorder started');
-          }
-        }
-      });
-
-      return pc;
-    } as any;
-
-    // Preserve prototype chain
-    window.RTCPeerConnection.prototype = origRTCPeerConnection.prototype;
-    Object.setPrototypeOf(window.RTCPeerConnection, origRTCPeerConnection);
-
-    console.log('[mibot-capture] WebRTC audio capture hook installed');
-  });
-
-  console.error('[mibot] WebRTC audio capture hook injected');
+  Wrapped.prototype = OrigRTC.prototype;
+  try { Object.setPrototypeOf(Wrapped, OrigRTC); } catch {}
+  w.RTCPeerConnection = Wrapped;
+  w.console?.log?.('[mibot-capture] WebRTC audio capture hook installed');
 }
 
 /**
- * Also inject on all new frames (for Zoom which runs in an iframe).
+ * Install the capture hook on a context so it runs in every frame, on every navigation,
+ * before page scripts. MUST be called before the first `page.goto` (before WebRTC starts).
  */
-export async function injectAudioCaptureAllFrames(page: Page): Promise<void> {
-  // Inject on main page
-  await injectAudioCapture(page);
-
-  // Inject on all existing frames
-  for (const frame of page.frames()) {
-    if (frame !== page.mainFrame()) {
-      try {
-        await frame.evaluate(() => {
-          if ((window as any).__mibotHooked) return;
-          (window as any).__mibotHooked = true;
-          const origRTC = window.RTCPeerConnection;
-          window.RTCPeerConnection = function(...args: any[]) {
-            const pc = new origRTC(...args);
-            pc.addEventListener('track', (event: RTCTrackEvent) => {
-              if (event.track.kind === 'audio') {
-                if (!(window as any).__mibotAudioCtx) {
-                  (window as any).__mibotAudioCtx = new AudioContext();
-                  (window as any).__mibotDest = (window as any).__mibotAudioCtx.createMediaStreamDestination();
-                }
-                const ctx = (window as any).__mibotAudioCtx;
-                const dest = (window as any).__mibotDest;
-                const stream = new MediaStream([event.track]);
-                const source = ctx.createMediaStreamSource(stream);
-                source.connect(dest);
-                if (!(window as any).__mibotRecorder) {
-                  const recorder = new MediaRecorder(dest.stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 64000 });
-                  const chunks: Blob[] = [];
-                  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-                  recorder.start(1000);
-                  (window as any).__mibotRecorder = recorder;
-                  (window as any).__mibotChunks = chunks;
-                }
-              }
-            });
-            return pc;
-          } as any;
-          window.RTCPeerConnection.prototype = origRTC.prototype;
-        });
-      } catch {}
-    }
-  }
+export async function installAudioCapture(context: BrowserContext): Promise<void> {
+  await context.addInitScript(audioCaptureHook);
+  console.error('[mibot] WebRTC audio capture hook installed on context (all frames)');
 }
 
 /**
