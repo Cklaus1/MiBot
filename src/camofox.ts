@@ -8,18 +8,62 @@ interface CamofoxTab {
   tabId: string;
 }
 
+/** Typed error for any non-2xx or non-JSON camofox REST response (R8). Carries the
+ *  status and a bounded body excerpt so a crashed camofox surfaces as a diagnosable
+ *  failure instead of an opaque SyntaxError deep inside snapshot parsing. */
+export class CamofoxApiError extends Error {
+  constructor(
+    message: string,
+    readonly path: string,
+    readonly status: number,
+    readonly bodyExcerpt: string,
+  ) {
+    super(message);
+    this.name = 'CamofoxApiError';
+  }
+}
+
+/** Pure validator for a camofox REST response (F8/R8). Rejects non-2xx and non-JSON
+ *  bodies with a typed error; returns the parsed JSON otherwise. Kept side-effect-free
+ *  (status/ok/text passed in) so the contract is unit-testable without a live server. */
+export function parseCamofoxResponse(path: string, status: number, ok: boolean, body: string): any {
+  const excerpt = body.length > 300 ? body.slice(0, 297) + '...' : body;
+  if (!ok) {
+    throw new CamofoxApiError(`Camofox ${path} failed: HTTP ${status}`, path, status, excerpt);
+  }
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new CamofoxApiError(`Camofox ${path} returned non-JSON body`, path, status, excerpt);
+  }
+}
+
+/** Single fetch choke point (R8): every JSON-returning camofox call reads the body once
+ *  and validates it through parseCamofoxResponse, so a crashed/500ing server can never be
+ *  mistaken for a valid response. `label` is the logical path used in error messages. */
+async function camofoxFetch(label: string, url: string, init?: RequestInit): Promise<any> {
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (e) {
+    throw new CamofoxApiError(`Camofox ${label} unreachable: ${(e as Error).message}`, label, 0, '');
+  }
+  const body = await res.text();
+  return parseCamofoxResponse(label, res.status, res.ok, body);
+}
+
 /** Thin wrapper around camofox REST API that exposes a Playwright-like Page interface.
  *  Only implements methods used by the playbook engine + meeting detection. */
 export class CamofoxPage {
   private tabId: string | null = null;
 
   async createTab(url: string, initScript?: string): Promise<void> {
-    const res = await fetch(`${CAMOFOX_URL}/tabs`, {
+    const data = await camofoxFetch('/tabs', `${CAMOFOX_URL}/tabs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: USER_ID, sessionKey: SESSION_KEY, url, ...(initScript ? { initScript } : {}) }),
-    });
-    const data = await res.json() as CamofoxTab;
+    }) as CamofoxTab;
+    if (!data.tabId) throw new CamofoxApiError('Camofox /tabs returned no tabId', '/tabs', 200, JSON.stringify(data).slice(0, 300));
     this.tabId = data.tabId;
     console.error(`[mibot] Camofox tab: ${this.tabId}`);
   }
@@ -28,15 +72,13 @@ export class CamofoxPage {
     if (!this.tabId) throw new Error('No camofox tab created');
     const url = `${CAMOFOX_URL}/tabs/${this.tabId}${path}?userId=${USER_ID}`;
     if (body) {
-      const res = await fetch(url, {
+      return camofoxFetch(path, url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: USER_ID, ...body }),
       });
-      return res.json();
     }
-    const res = await fetch(url);
-    return res.json();
+    return camofoxFetch(path, url);
   }
 
   /** Get accessibility snapshot with element refs. */
@@ -58,6 +100,9 @@ export class CamofoxPage {
   async screenshot(opts?: { path?: string }): Promise<Buffer> {
     if (!this.tabId) throw new Error('No tab');
     const res = await fetch(`${CAMOFOX_URL}/tabs/${this.tabId}/screenshot?userId=${USER_ID}`);
+    if (!res.ok) {
+      throw new CamofoxApiError(`Camofox /screenshot failed: HTTP ${res.status}`, '/screenshot', res.status, '');
+    }
     const buf = Buffer.from(await res.arrayBuffer());
     if (opts?.path) {
       const fs = await import('fs');
@@ -134,12 +179,11 @@ export class CamofoxPage {
   /** Run JavaScript in the page via camofox /eval endpoint. */
   async eval(expression: string): Promise<unknown> {
     if (!this.tabId) throw new Error('No tab');
-    const res = await fetch(`${CAMOFOX_URL}/tabs/${this.tabId}/eval`, {
+    const data = await camofoxFetch('/eval', `${CAMOFOX_URL}/tabs/${this.tabId}/eval`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: USER_ID, expression }),
-    });
-    const data = await res.json() as { ok: boolean; result: unknown };
+    }) as { ok: boolean; result: unknown };
     return data.result;
   }
 
@@ -213,8 +257,7 @@ export class CamofoxPage {
 export async function launchCamofox(url: string): Promise<CamofoxPage> {
   // Verify camofox is running
   try {
-    const res = await fetch(`${CAMOFOX_URL}/`);
-    const data = await res.json() as { ok: boolean };
+    const data = await camofoxFetch('/', `${CAMOFOX_URL}/`) as { ok: boolean };
     if (!data.ok) throw new Error('Camofox not ready');
   } catch {
     throw new Error(`Camofox not running at ${CAMOFOX_URL}. Start it with: cd /root/projects/camofox-browser && npm start`);
@@ -222,8 +265,7 @@ export async function launchCamofox(url: string): Promise<CamofoxPage> {
 
   // Clean up any stale MiBot tabs from previous runs
   try {
-    const tabsRes = await fetch(`${CAMOFOX_URL}/tabs?userId=${USER_ID}`);
-    const tabsData = await tabsRes.json() as { tabs: Array<{ tabId: string; url: string }> };
+    const tabsData = await camofoxFetch('/tabs', `${CAMOFOX_URL}/tabs?userId=${USER_ID}`) as { tabs: Array<{ tabId: string; url: string }> };
     for (const tab of tabsData.tabs || []) {
       if (tab.url.includes('meet.google.com')) {
         // Navigate away to leave the meeting, then delete

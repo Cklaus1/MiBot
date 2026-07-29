@@ -46,7 +46,7 @@
 - [x] F4 — runCli() boundary (R7/AR4)
 - [x] F5 — LeavePolicy pure function (AD4/AQ2)
 - [x] F6 — heartbeat-as-liveness, same-statement, BOTH backends (R1/AR6)
-- [ ] F7 — findElement deadline-poll, .first()-safe (R9)
+- [x] F7 — findElement deadline-poll, .first()-safe (R9)
 - [ ] F8 — Camofox api() centralized validation (R8)
 - [x] F9 — uniform signal dedup util (R11)
 - [x] R12 — fmtTime handles all shapes (display-only, D1/CA10, OQ4)
