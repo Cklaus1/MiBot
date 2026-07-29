@@ -86,20 +86,20 @@
 - [x] CA11 P3 — GWS_PATH set-but-missing + hardcoded default · blockedBy: —
 
 ## Wave 3 — Meeting lifecycle
-- [ ] M1+M3 P0/P1 — frozen consecutiveEmptyPolls + fabricated names, **ONE task**, aria-count→leave-gate · blockedBy: F5
-- [ ] M15 P1 — camofox loop has no alone-detection · blockedBy: F5, F6
-- [ ] M9 P2 — minHumans>0 alone gate · blockedBy: F5
-- [ ] M7 P2 — leave-button 2-miss debounce · blockedBy: F5
-- [ ] M2 P1 — waitForTimeout reject → finalize · blockedBy: —
-- [ ] M6 P2 — first-60s skips whole loop body · blockedBy: —
-- [ ] M8 P2 — mkdir outside try crashes poll · blockedBy: —
+- [x] M1+M3 P0/P1 — frozen consecutiveEmptyPolls + fabricated names, **ONE task**, aria-count→leave-gate · blockedBy: F5
+- [x] M15 P1 — camofox loop has no alone-detection · blockedBy: F5, F6
+- [x] M9 P2 — minHumans>0 alone gate · blockedBy: F5
+- [x] M7 P2 — leave-button 2-miss debounce · blockedBy: F5
+- [x] M2 P1 — waitForTimeout reject → finalize · blockedBy: —
+- [x] M6 P2 — first-60s skips whole loop body · blockedBy: —
+- [x] M8 P2 — mkdir outside try crashes poll · blockedBy: —
 - [x] M4 P1 — chat DOM-index dedup (Teams virtualization) · blockedBy: F9
 - [ ] M5 P1 — hand-as-reaction spam · blockedBy: F9
 - [ ] M10 P2 — hand re-raise overwrite · blockedBy: F9
 - [ ] M11 P2 — Meet chat sender closest() (needs-repro) · blockedBy: —
 - [ ] M12 P3 — isSimilar divide-by-samples · blockedBy: —
 - [ ] M13 P3 — presenter handoff within poll gap · blockedBy: —
-- [ ] M14 P3 — hardcoded /tmp/teams-ended.png · blockedBy: —
+- [x] M14 P3 — hardcoded /tmp/teams-ended.png · blockedBy: —
 - [ ] M16 P3 — hoist shared isSimilar (fixes M12 both places) · blockedBy: M12
 
 ## Wave 4 — Audio lifecycle (ONE coordinated PR, OQ1: R4→R3→R2)

@@ -14,6 +14,7 @@ import { injectAudioCaptureAllFrames } from './webrtc-capture.js';
 import { PlaybookEngine, CamofoxPlaybookEngine } from './playbook.js';
 import { ControlChannel } from './control.js';
 import { waitForMeetingEnd } from './meeting.js';
+import { LeavePolicy } from './leave-policy.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
 import { transcribe } from './transcribe.js';
 import { launchCamofox, type CamofoxPage } from './camofox.js';
@@ -28,6 +29,26 @@ export function detectPlatform(url: string): 'zoom' | 'teams' | 'meet' | null {
   if (/teams\.microsoft\.com|teams\.live\.com/i.test(url)) return 'teams';
   if (/meet\.google\.com/i.test(url)) return 'meet';
   return null;
+}
+
+/**
+ * M15: extract the People-panel count from a Camofox/Meet accessibility snapshot.
+ * Returns null when the People button isn't present so the caller can treat the count
+ * as unknown (and NOT trigger a false alone-exit) rather than assuming zero.
+ */
+export function parsePeopleCount(snapshot: string): number | null {
+  const m = snapshot.match(/button "People" \[.*?\]: "(\d+)"/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * M15: convert a raw People count (which includes the bot itself) into a human count for
+ * the leave gate. Clamps at 0; passes null through so an unknown count never fabricates a
+ * "0 humans" reading that would leave the meeting prematurely.
+ */
+export function camofoxHumanCount(peopleCount: number | null): number | null {
+  if (peopleCount === null) return null;
+  return Math.max(0, peopleCount - 1);
 }
 
 export interface BotOptions {
@@ -406,6 +427,24 @@ async function monitorCamofoxMeeting(
   const startTime = Date.now();
   const maxMs = config.maxDurationHours * 60 * 60 * 1000;
   let lastParticipantCount = -1;
+
+  // M15: the camofox loop had NO alone-detection — it broke only on maxDuration or the "Leave
+  // call" button vanishing, so a Meet call everyone left recorded silence for up to maxDuration.
+  // Reuse the same pure LeavePolicy the Playwright path uses, fed the People-panel count minus
+  // the bot itself. Warm-up + config mapping mirror meeting.ts exactly.
+  const policy = new LeavePolicy(
+    {
+      minHumansToStay: config.minHumansToStay,
+      aloneTimeoutMs: config.aloneTimeoutMinutes * 60 * 1000,
+      leaveGracePeriodMs: config.leaveGracePeriodSeconds * 1000,
+      maxDurationMs: maxMs,
+      leaveButtonMissesToEnd: 2,
+      emptyPollsToTrigger: 2,
+    },
+    startTime,
+  );
+  const MIN_CALL_SECONDS = 60; // Warm-up: don't ACT on "ended"/"alone" in the first 60 seconds
+  let lastKnownHumanCount = 1; // Unknown People count → assume a human present (never false-exit)
   let isPresenting = false;
   let lastScreenshotTime = 0;
   let lastScreenshotBuf: Buffer | null = null;
@@ -418,16 +457,14 @@ async function monitorCamofoxMeeting(
 
   while (Date.now() - startTime < maxMs) {
     await page.waitForTimeout(5000);
+    const inWarmup = Date.now() - startTime < MIN_CALL_SECONDS * 1000;
 
     // Heartbeat — proves bot is alive
     updateHeartbeat(meetingId);
 
-    // Check if still in the call
+    // Check if still in the call. A single flaky miss must NOT end the meeting (M7 debounce
+    // lives in LeavePolicy); we track the signal here and let the policy decide at poll end.
     const inCall = await page.isTextVisible('Leave call').catch(() => false);
-    if (!inCall) {
-      console.error('[mibot] Meeting ended (Leave call button gone)');
-      break;
-    }
 
     // Drain signals from MutationObserver
     try {
@@ -538,9 +575,11 @@ async function monitorCamofoxMeeting(
         }
       }
 
-      const peopleMatch = snapshot.match(/button "People" \[.*?\]: "(\d+)"/);
-      if (peopleMatch) {
-        const count = parseInt(peopleMatch[1]);
+      const count = parsePeopleCount(snapshot);
+      if (count !== null) {
+        // M15: People count includes the bot; humans = count - 1. Only overwrite the last-known
+        // count when we actually parsed it (an unknown snapshot must not read as "0 humans").
+        lastKnownHumanCount = camofoxHumanCount(count) ?? lastKnownHumanCount;
         if (count !== lastParticipantCount) {
           console.error(`[mibot] Participants: ${count}${participantMap.size > 0 ? ` (${[...participantMap.keys()].join(', ')})` : ''}`);
           lastParticipantCount = count;
@@ -592,6 +631,18 @@ async function monitorCamofoxMeeting(
         }
       } catch {}
       lastAudioFlush = Date.now();
+    }
+
+    // M15: single leave gate. During warm-up we track but never act on a missing button
+    // (mirror meeting.ts). The policy owns duration cap, leave-button debounce, alone-timeout,
+    // and empty-grace — all previously absent from this loop.
+    const decision = policy.observe(
+      { humanCount: lastKnownHumanCount, hasLeaveButton: inWarmup ? true : inCall },
+      Date.now(),
+    );
+    if (decision.action === 'leave') {
+      console.error(`[mibot] Leaving — ${decision.reason}`);
+      break;
     }
   }
 
