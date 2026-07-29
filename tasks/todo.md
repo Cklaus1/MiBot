@@ -94,7 +94,7 @@
 - [x] M6 P2 — first-60s skips whole loop body · blockedBy: —
 - [x] M8 P2 — mkdir outside try crashes poll · blockedBy: —
 - [x] M4 P1 — chat DOM-index dedup (Teams virtualization) · blockedBy: F9
-- [ ] M5 P1 — hand-as-reaction spam · blockedBy: F9
+- [x] M5 P1 — hand-as-reaction spam · blockedBy: F9
 - [ ] M10 P2 — hand re-raise overwrite · blockedBy: F9
 - [ ] M11 P2 — Meet chat sender closest() (needs-repro) · blockedBy: —
 - [ ] M12 P3 — isSimilar divide-by-samples · blockedBy: —

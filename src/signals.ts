@@ -1,7 +1,7 @@
 import { type Page } from 'playwright';
 import fs from 'fs';
 import path from 'path';
-import { OccurrenceDeduper } from './signal-dedup.js';
+import { OccurrenceDeduper, risingEdgeReactions } from './signal-dedup.js';
 
 /**
  * Compute a perceptual hash of a JPEG image buffer.
@@ -99,6 +99,9 @@ export class SignalTracker {
   private chatDedup = new OccurrenceDeduper<{ sender: string; text: string }>(
     (m) => `${m.sender}::${m.text}`,
   );
+  // M5/R11: reactions are transient — dedup on the rising edge (present now, absent last poll)
+  // so an animation spanning two polls counts once. Threaded poll-to-poll.
+  private reactionKeys = new Set<string>();
   private screenshotDir: string;
   private screenshotInterval = 30_000; // 30 seconds
   private lastScreenshot = 0;
@@ -197,13 +200,8 @@ export class SignalTracker {
           const name = el.closest('[data-tid="participantItem"]')?.textContent?.trim() || '';
           results.push({ participant: name, type });
         });
-
-        // Also check for raised hand indicators as reactions
-        const handIcons = document.querySelectorAll('[data-tid*="raised-hand"], [class*="hand-raised"]');
-        handIcons.forEach(el => {
-          const name = el.closest('[data-tid="participantItem"]')?.textContent?.trim() || '';
-          results.push({ participant: name, type: 'raised_hand' });
-        });
+        // M5: raised hands are NOT reactions — pollHandRaises owns them. Scraping them here
+        // re-emitted a phantom reaction every poll for the whole duration of a raised hand.
       }
 
       if (p === 'zoom') {
@@ -222,12 +220,13 @@ export class SignalTracker {
       return results;
     }, platform).catch(() => []);
 
+    // M5: rising-edge dedup — a reaction animation spanning multiple polls counts once.
     const now = new Date().toISOString();
-    for (const r of reactions) {
+    const { fresh, keys } = risingEdgeReactions(reactions, this.reactionKeys);
+    this.reactionKeys = keys;
+    for (const r of fresh) {
       this.reactions.push({ participant: r.participant, type: r.type, timestamp: now });
-      if (r.type !== 'raised_hand') {
-        console.error(`[mibot] Reaction: ${r.participant} → ${r.type}`);
-      }
+      console.error(`[mibot] Reaction: ${r.participant} → ${r.type}`);
     }
   }
 
