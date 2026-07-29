@@ -112,11 +112,15 @@ export function insertMeeting(m: {
 }): Meeting {
   const db = getDb();
   // AR6: stamp heartbeat at insert so a freshly-created meeting is immediately "live".
+  // CA3: ON CONFLICT DO NOTHING makes a concurrent insert of the same calendar_event_id
+  // (two pollers racing between check and insert) a no-op instead of a thrown constraint
+  // error; the loser reads back the winner's row below.
   const stmt = db.prepare(`
     INSERT INTO meetings (title, platform, join_url, start_time, end_time,
       calendar_event_id, organizer, organizer_email, location, description,
       attendees, is_recurring, recurrence_id, heartbeat)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT DO NOTHING
   `);
   const result = stmt.run(
     m.title, m.platform, m.join_url, m.start_time, m.end_time ?? null,
@@ -125,6 +129,10 @@ export function insertMeeting(m: {
     m.attendees ? JSON.stringify(m.attendees) : null,
     m.is_recurring ? 1 : 0, m.recurrence_id ?? null, new Date().toISOString(),
   );
+  if (result.changes === 0 && m.calendar_event_id) {
+    // A concurrent insert won the race; return the existing row rather than a null lookup.
+    return getMeetingByEventId(m.calendar_event_id)!;
+  }
   return db.prepare('SELECT * FROM meetings WHERE id = ?').get(result.lastInsertRowid) as Meeting;
 }
 
