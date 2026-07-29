@@ -1,7 +1,7 @@
 import { type Page } from 'playwright';
 import fs from 'fs';
 import path from 'path';
-import { OccurrenceDeduper, risingEdgeReactions } from './signal-dedup.js';
+import { OccurrenceDeduper, risingEdgeReactions, HandRaiseTracker } from './signal-dedup.js';
 
 /**
  * Compute a perceptual hash of a JPEG image buffer.
@@ -92,7 +92,9 @@ export interface MeetingSignals {
 export class SignalTracker {
   private chat: ChatMessage[] = [];
   private reactions: Reaction[] = [];
-  private handRaises = new Map<string, HandRaise>();
+  // M10: full raise history (a re-raise after lowering used to overwrite the prior raise).
+  private handTracker = new HandRaiseTracker();
+  private handOpen = new Set<string>(); // for rising/falling-edge log lines only
   private currentShare: ScreenShare | null = null;
   private completedShares: ScreenShare[] = [];
   // M4/R11: content-stable, occurrence-counted chat dedup (survives chat virtualization).
@@ -273,21 +275,17 @@ export class SignalTracker {
     const now = new Date().toISOString();
     const currentRaised = new Set(raisedNames);
 
-    // New hands raised
-    for (const name of raisedNames) {
-      if (!this.handRaises.has(name) || this.handRaises.get(name)!.lowered_at !== null) {
-        this.handRaises.set(name, { participant: name, raised_at: now, lowered_at: null });
-        console.error(`[mibot] ✋ Hand raised: ${name}`);
-      }
+    // Rising/falling-edge log lines (the tracker owns the actual history).
+    for (const name of currentRaised) {
+      if (!this.handOpen.has(name)) console.error(`[mibot] ✋ Hand raised: ${name}`);
     }
+    for (const name of this.handOpen) {
+      if (!currentRaised.has(name)) console.error(`[mibot] Hand lowered: ${name}`);
+    }
+    this.handOpen = currentRaised;
 
-    // Hands lowered
-    for (const [name, raise] of this.handRaises) {
-      if (!currentRaised.has(name) && raise.lowered_at === null) {
-        raise.lowered_at = now;
-        console.error(`[mibot] Hand lowered: ${name}`);
-      }
-    }
+    // M10: append to full history — re-raises no longer overwrite the earlier completed raise.
+    this.handTracker.observe(raisedNames, now);
   }
 
   // ── Screen Sharing ────────────────────────────────────────────
@@ -393,22 +391,20 @@ export class SignalTracker {
       this.completedShares.push(this.currentShare);
     }
 
-    // Close any open hand raises
+    // Close any open hand raises (M10: full history, including re-raises).
     const now = new Date().toISOString();
-    for (const raise of this.handRaises.values()) {
-      if (!raise.lowered_at) raise.lowered_at = now;
-    }
+    const handRaises = this.handTracker.finish(now);
 
     const signals: MeetingSignals = {
       chat: this.chat,
       reactions: this.reactions,
-      hand_raises: [...this.handRaises.values()],
+      hand_raises: handRaises,
       screen_shares: this.completedShares,
     };
 
     if (this.chat.length > 0) console.error(`[mibot] Chat: ${this.chat.length} messages captured`);
     if (this.reactions.length > 0) console.error(`[mibot] Reactions: ${this.reactions.length} captured`);
-    if (this.handRaises.size > 0) console.error(`[mibot] Hand raises: ${this.handRaises.size} captured`);
+    if (handRaises.length > 0) console.error(`[mibot] Hand raises: ${handRaises.length} captured`);
     if (this.completedShares.length > 0) {
       const totalScreenshots = this.completedShares.reduce((n, s) => n + s.screenshots.length, 0);
       console.error(`[mibot] Screen shares: ${this.completedShares.length} sessions, ${totalScreenshots} screenshots`);

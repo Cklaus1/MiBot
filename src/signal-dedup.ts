@@ -35,6 +35,58 @@ export function risingEdgeReactions(
   return { fresh, keys };
 }
 
+// ── Hand-raise history (M10) ──────────────────────────────────────────────
+//
+// Hands were stored in a Map<name, HandRaise> keyed by participant, so a re-raise after a lower
+// OVERWROTE the completed earlier raise. HandRaiseTracker keeps full history: a rising edge
+// (name present now, no open raise) opens a raise; a falling edge (name gone) closes the open one.
+// A hand that stays up across polls is the same raise. finish() closes any still-open hands.
+
+export interface HandRaiseRecord {
+  participant: string;
+  raised_at: string;
+  lowered_at: string | null;
+}
+
+export class HandRaiseTracker {
+  private completed: HandRaiseRecord[] = [];
+  private open = new Map<string, HandRaiseRecord>(); // name → currently-open raise
+
+  /** Feed the set of names currently showing a raised hand this poll, with a timestamp. */
+  observe(raisedNames: string[], nowIso: string): void {
+    const current = new Set(raisedNames);
+    // Rising edges: a name raised now with no open raise starts a new one.
+    for (const name of current) {
+      if (!this.open.has(name)) {
+        this.open.set(name, { participant: name, raised_at: nowIso, lowered_at: null });
+      }
+    }
+    // Falling edges: an open raise whose name is no longer present is completed.
+    for (const [name, rec] of this.open) {
+      if (!current.has(name)) {
+        rec.lowered_at = nowIso;
+        this.completed.push(rec);
+        this.open.delete(name);
+      }
+    }
+  }
+
+  /** Total raises recorded (completed + still-open). */
+  totalRaises(): number {
+    return this.completed.length + this.open.size;
+  }
+
+  /** Close any still-open hands at `nowIso` and return every raise in completion order. */
+  finish(nowIso: string): HandRaiseRecord[] {
+    for (const rec of this.open.values()) {
+      rec.lowered_at = nowIso;
+      this.completed.push(rec);
+    }
+    this.open.clear();
+    return this.completed;
+  }
+}
+
 export class OccurrenceDeduper<T> {
   /** Highest occurrence count already emitted for each content key. */
   private seen = new Map<string, number>();
