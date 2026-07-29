@@ -98,7 +98,7 @@
 - [x] M10 P2 — hand re-raise overwrite · blockedBy: F9
 - [ ] M11 P2 — Meet chat sender closest() (needs-repro) · blockedBy: —
 - [x] M12 P3 — isSimilar divide-by-samples · blockedBy: —
-- [ ] M13 P3 — presenter handoff within poll gap · blockedBy: —
+- [x] M13 P3 — presenter handoff within poll gap · blockedBy: —
 - [x] M14 P3 — hardcoded /tmp/teams-ended.png · blockedBy: —
 - [x] M16 P3 — hoist shared isSimilar (fixes M12 both places) · blockedBy: M12
 

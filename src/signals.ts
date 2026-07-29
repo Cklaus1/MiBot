@@ -40,6 +40,33 @@ export interface MeetingSignals {
   screen_shares: ScreenShare[];
 }
 
+// ── Screen-share state machine (M13) ──────────────────────────────────
+
+export type ShareTransition =
+  | { kind: 'none' }
+  | { kind: 'start'; presenter: string }
+  | { kind: 'end' }
+  | { kind: 'handoff'; presenter: string };
+
+/**
+ * Decide the screen-share transition from the newly-scraped presenter (`sharingNow`, null if
+ * nobody is presenting) and the presenter of the currently-open share (`currentPresenter`).
+ * The handoff case — a different presenter than the open share — closes the old and opens the
+ * new in one step, which the old start/end-only logic missed (M13).
+ */
+export function shareTransition(
+  sharingNow: string | null,
+  currentPresenter: string | null,
+): ShareTransition {
+  if (!sharingNow && !currentPresenter) return { kind: 'none' };
+  if (sharingNow && !currentPresenter) return { kind: 'start', presenter: sharingNow };
+  if (!sharingNow && currentPresenter) return { kind: 'end' };
+  // Both present: same presenter → nothing changed; different → handoff.
+  return sharingNow === currentPresenter
+    ? { kind: 'none' }
+    : { kind: 'handoff', presenter: sharingNow! };
+}
+
 // ── Signal Tracker ────────────────────────────────────────────────────
 
 export class SignalTracker {
@@ -284,16 +311,24 @@ export class SignalTracker {
 
     const now = new Date().toISOString();
 
-    if (sharing && !this.currentShare) {
-      // Screen sharing started
-      this.currentShare = { presenter: sharing, started_at: now, ended_at: null, screenshots: [] };
-      console.error(`[mibot] Screen share started: ${sharing}`);
-    } else if (!sharing && this.currentShare) {
-      // Screen sharing stopped
-      this.currentShare.ended_at = now;
-      this.completedShares.push(this.currentShare);
-      console.error(`[mibot] Screen share ended: ${this.currentShare.presenter} (${this.currentShare.screenshots.length} screenshots)`);
+    // M13: single state machine covers the presenter-handoff case (A stops + B starts within
+    // one poll gap), which the old start/end-only branches silently dropped onto A.
+    const closeCurrent = () => {
+      this.currentShare!.ended_at = now;
+      this.completedShares.push(this.currentShare!);
+      console.error(`[mibot] Screen share ended: ${this.currentShare!.presenter} (${this.currentShare!.screenshots.length} screenshots)`);
+    };
+    const transition = shareTransition(sharing, this.currentShare?.presenter ?? null);
+    if (transition.kind === 'start') {
+      this.currentShare = { presenter: transition.presenter, started_at: now, ended_at: null, screenshots: [] };
+      console.error(`[mibot] Screen share started: ${transition.presenter}`);
+    } else if (transition.kind === 'end') {
+      closeCurrent();
       this.currentShare = null;
+    } else if (transition.kind === 'handoff') {
+      closeCurrent();
+      this.currentShare = { presenter: transition.presenter, started_at: now, ended_at: null, screenshots: [] };
+      console.error(`[mibot] Screen share started: ${transition.presenter}`);
     }
 
     // Take screenshot during active screen share
