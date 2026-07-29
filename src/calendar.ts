@@ -6,8 +6,24 @@ import { detectPlatform } from './bot.js';
 import { fmtTime } from './config.js';
 import { runCli, CliError } from './runcli.js';
 
-/** Path to gwscli binary (Google Workspace CLI). */
-const GWS_PATH = process.env.GWS_PATH || '/root/projects/gwscli/target/release/gws';
+/** Hardcoded dev fallback for the gwscli binary; only used when GWS_PATH is unset. */
+const GWS_DEFAULT_PATH = '/root/projects/gwscli/target/release/gws';
+
+/**
+ * CA11: decide how to treat the gwscli binary. An explicitly-set GWS_PATH that points at a
+ * missing file is a misconfiguration and must WARN (previously it silently returned [], so
+ * Google sync just stopped). An unset var falling back to the hardcoded dev default that
+ * isn't present means Google sync was never configured on this machine → silent skip.
+ */
+export function resolveGwsBinary(
+  envPath: string | undefined,
+  exists: (p: string) => boolean,
+): { action: 'run'; path: string } | { action: 'warn'; path: string } | { action: 'skip' } {
+  const explicit = !!envPath;
+  const p = envPath || GWS_DEFAULT_PATH;
+  if (exists(p)) return { action: 'run', path: p };
+  return explicit ? { action: 'warn', path: p } : { action: 'skip' };
+}
 
 /** Run a calendar CLI, tolerating a non-zero exit that still printed JSON to stdout (the
  *  prior execFile catch relied on this). Rethrows only when there is no stdout to parse. */
@@ -303,7 +319,13 @@ export function googleToRaw(event: Record<string, any>): RawCalendarEvent {
 /** Sync Google Calendar events via gwscli and insert into local db. */
 async function syncGoogleCalendar(): Promise<Meeting[]> {
   const fs = await import('fs');
-  if (!fs.existsSync(GWS_PATH)) return []; // Silently skip — user hasn't set up gwscli
+  const gws = resolveGwsBinary(process.env.GWS_PATH, (p) => fs.existsSync(p));
+  if (gws.action === 'skip') return []; // Never configured — stay silent
+  if (gws.action === 'warn') {
+    console.error(`[mibot] GWS_PATH is set to "${gws.path}" but no such binary exists — Google Calendar sync skipped`);
+    return [];
+  }
+  const gwsPath = gws.path;
 
   const now = new Date();
   const end = new Date(now.getTime() + 24 * 60 * 60 * 1000);
@@ -311,7 +333,7 @@ async function syncGoogleCalendar(): Promise<Meeting[]> {
   // Some of these CLIs print JSON to stdout yet exit non-zero; recover that stdout from the
   // CliError (as the old execFile catch did) and only rethrow if there's nothing usable.
   // CA1 (blockedBy AR7) tightens this exit-code contract next.
-  const stdout = await runCliRecoverStdout(GWS_PATH, [
+  const stdout = await runCliRecoverStdout(gwsPath, [
     'calendar', 'events', 'list',
     '--params', JSON.stringify({
       calendarId: 'primary',
