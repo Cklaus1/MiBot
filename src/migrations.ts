@@ -71,6 +71,7 @@ export const MIGRATIONS: Migration[] = [
     name: 'calendar/runtime columns + heartbeat (legacy backfill)',
     up: (db) => {
       const meetingCols: Record<string, string> = {
+        end_time: 'TEXT', calendar_event_id: 'TEXT',
         organizer: 'TEXT', organizer_email: 'TEXT', location: 'TEXT', description: 'TEXT',
         attendees: 'TEXT', is_recurring: 'INTEGER DEFAULT 0', recurrence_id: 'TEXT',
         participants: 'TEXT', speaker_timeline: 'TEXT', actual_start: 'TEXT', actual_end: 'TEXT',
@@ -80,6 +81,36 @@ export const MIGRATIONS: Migration[] = [
         addColumnIfMissing(db, 'meetings', col, decl);
       }
       addColumnIfMissing(db, 'recordings', 'metadata_path', 'TEXT');
+    },
+  },
+  {
+    version: 3,
+    name: 'dedupe calendar_event_id + partial unique index (D6)',
+    up: (db) => {
+      // Collapse any pre-C19 duplicate rows before the unique index can be created.
+      // For each event id with >1 row, keep the lowest id, re-point child recordings
+      // to it, then delete the losers. Runs inside the caller's migration transaction.
+      db.exec(`
+        UPDATE recordings SET meeting_id = (
+          SELECT MIN(m2.id) FROM meetings m1
+          JOIN meetings m2 ON m2.calendar_event_id = m1.calendar_event_id
+          WHERE m1.id = recordings.meeting_id AND m1.calendar_event_id IS NOT NULL
+        )
+        WHERE meeting_id IN (
+          SELECT m.id FROM meetings m
+          WHERE m.calendar_event_id IS NOT NULL
+            AND m.id > (SELECT MIN(m3.id) FROM meetings m3 WHERE m3.calendar_event_id = m.calendar_event_id)
+        );
+
+        DELETE FROM meetings WHERE id IN (
+          SELECT m.id FROM meetings m
+          WHERE m.calendar_event_id IS NOT NULL
+            AND m.id > (SELECT MIN(m3.id) FROM meetings m3 WHERE m3.calendar_event_id = m.calendar_event_id)
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_meetings_event_uniq
+          ON meetings(calendar_event_id) WHERE calendar_event_id IS NOT NULL;
+      `);
     },
   },
 ];
