@@ -209,13 +209,36 @@ export function isBot(name: string): boolean {
   });
 }
 
-/** Format a date string in the user's configured timezone.
- *  Graph API returns datetimes without Z suffix but in UTC — normalize before display. */
+/** Does this timestamp already carry timezone information (Z, or a ±HH:MM / ±HHMM offset)? */
+function hasTimezone(dateStr: string): boolean {
+  return /(?:Z|[+-]\d{2}:?\d{2})$/.test(dateStr.trim());
+}
+
+/** Format a date string in the user's configured timezone (R12/D1/CA10).
+ *  Handles every stored shape: Z-suffixed, ±HH:MM offset (Google), space-separated,
+ *  date-only, and Graph's bare UTC datetimes. Display-boundary only — SQLite already
+ *  parses the stored shapes for scheduling, so nothing here is persisted. */
 export function fmtTime(dateStr: string): string {
   const config = loadConfig();
-  // Append Z if no timezone indicator present (Graph API convention: bare datetimes are UTC)
-  const normalized = /[Z+\-]\d{0,4}$/.test(dateStr) ? dateStr : dateStr.replace(/\.?\d*$/, 'Z');
-  return new Date(normalized).toLocaleString('en-US', {
+  const trimmed = (dateStr ?? '').trim();
+
+  let normalized: string;
+  if (hasTimezone(trimmed)) {
+    // Already unambiguous (Z or explicit offset) — use as-is.
+    normalized = trimmed;
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    // Date-only: treat as midnight UTC so it renders on the intended calendar day.
+    normalized = `${trimmed}T00:00:00Z`;
+  } else {
+    // Bare datetime (Graph convention: UTC). Accept both 'T' and space separators,
+    // strip any fractional seconds, and append Z.
+    normalized = trimmed.replace(' ', 'T').replace(/\.\d+$/, '') + 'Z';
+  }
+
+  const d = new Date(normalized);
+  if (isNaN(d.getTime())) return trimmed || '(no date)';
+
+  return d.toLocaleString('en-US', {
     timeZone: config.timezone,
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });

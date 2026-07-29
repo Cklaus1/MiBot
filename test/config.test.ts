@@ -52,4 +52,39 @@ describe('fmtTime', () => {
     const result = fmtTime('2026-03-27T16:00:00Z');
     expect(result).toBeTruthy();
   });
+
+  // R12 (CA10): Google returns offset datetimes like -07:00; the ':' broke the old
+  // suffix regex, which then mangled the string into "Invalid Date".
+  it('handles offset datetimes (Google -07:00 form) without producing Invalid Date', () => {
+    const result = fmtTime('2026-03-27T16:00:00-07:00');
+    expect(result).not.toContain('Invalid');
+    expect(result).toContain('Mar');
+    // 16:00 at -07:00 is 23:00 UTC; in America/Chicago (test uses a fixed tz) it stays Mar 27
+    expect(result).toContain('27');
+  });
+
+  it('handles positive-offset datetimes (+05:30)', () => {
+    const result = fmtTime('2026-03-27T16:00:00+05:30');
+    expect(result).not.toContain('Invalid');
+    expect(result).toContain('Mar');
+  });
+
+  // R12 (D1): date-only values must not become Invalid Date.
+  it('handles date-only values', () => {
+    const result = fmtTime('2026-03-27');
+    expect(result).not.toContain('Invalid');
+    expect(result).toContain('Mar');
+  });
+
+  // Graph API space-separated form (no T).
+  it('handles space-separated datetimes', () => {
+    const result = fmtTime('2026-03-27 16:00:00');
+    expect(result).not.toContain('Invalid');
+    expect(result).toContain('Mar');
+  });
+
+  it('returns a stable marker for genuinely unparseable input rather than "Invalid Date"', () => {
+    const result = fmtTime('not-a-date');
+    expect(result).not.toContain('Invalid Date');
+  });
 });
