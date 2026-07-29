@@ -24,6 +24,14 @@ _(none yet — appended during the build loop)_
   sent), so this only misbehaves if ms365-cli sets a timezone preference — unverified. Fix if
   reproduced: convert `{dateTime,timeZone}` → UTC ISO in `m365ToRaw`. The AR7 seam gives it a
   single home (one line in `m365ToRaw`). P3 · needs-repro. Not fixed this run (no fixture).
+- [BUG] M11 `signals.ts` Meet chat sender — the Playwright `pollChat` meet branch reads the
+  sender via descendant `querySelector('[data-sender-name]')`, but Meet reportedly puts the attr
+  on the ancestor (→ sender always `''`). **Dead code as shipped:** `~/.config/mibot/playbooks/
+  meet.json` sets `browser: camofox`, so every Meet meeting routes through `monitorCamofoxMeeting`
+  (inline chat scrape via the signal observer), never `SignalTracker.pollChat`. The branch only
+  goes live if a `meet` playbook sets `browser: playwright`. Proposed fix `el.closest(
+  '[data-sender-name]')` is unverified against real Meet DOM — encoding it as a test fixture would
+  bake in a guess (the exact needs-repro trap). Fix when a Playwright-Meet repro exists. P2 · S.
 - [BUG] CA2 empty-window semantics — a provider returning a valid-but-empty event list cancels
   ALL its scheduled meetings. This is intentional (empty window = nothing scheduled) and safe
   because `parseEventsPayload` throws on error payloads (so a failed sync never reaches the

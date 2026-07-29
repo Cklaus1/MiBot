@@ -96,7 +96,7 @@
 - [x] M4 P1 — chat DOM-index dedup (Teams virtualization) · blockedBy: F9
 - [x] M5 P1 — hand-as-reaction spam · blockedBy: F9
 - [x] M10 P2 — hand re-raise overwrite · blockedBy: F9
-- [ ] M11 P2 — Meet chat sender closest() (needs-repro) · blockedBy: —
+- [BLOCKED] M11 P2 — Meet chat sender closest() (needs-repro) · blockedBy: — — dead code as shipped (meet.json browser=camofox → Meet never hits SignalTracker.pollChat); fix direction unverified vs real Meet DOM. Logged in opportunities.md
 - [x] M12 P3 — isSimilar divide-by-samples · blockedBy: —
 - [x] M13 P3 — presenter handoff within poll gap · blockedBy: —
 - [x] M14 P3 — hardcoded /tmp/teams-ended.png · blockedBy: —

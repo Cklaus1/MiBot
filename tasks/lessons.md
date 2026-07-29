@@ -37,3 +37,17 @@
 ### Playwright's env option doesn't set DISPLAY for headless detection
 - **Mistake:** Passed `env: { DISPLAY: ':50' }` in launch options but Playwright checks `process.env.DISPLAY` before launching Chrome.
 - **Rule:** Set `process.env.DISPLAY` directly before calling `chromium.launch()`.
+
+## 2026-07-29 — Build-loop Wave 3 (meeting lifecycle)
+
+### Two parallel engines drift — port the fix, don't re-implement it
+- **Pattern:** The Playwright loop (`meeting.ts`) and the Camofox/Meet loop (`bot.ts monitorCamofoxMeeting`) each have their own poll loop. Wave 1–2 fixes to leave logic (LeavePolicy) landed only in the Playwright loop; the camofox loop had NO alone-detection at all (M15).
+- **Rule:** When a bug is fixed behind a pure helper (LeavePolicy, isSimilarImage, shareTransition), audit every engine that should use it. Prefer porting the *same* pure helper into the second engine over writing a second copy — a second copy carries the original bug forward (M16 was exactly this: two inline `isSimilar` copies both had the M12 divide-by-samples bug).
+
+### Transient vs. persistent signals need different dedup models
+- **Mistake risk:** Using occurrence-counting dedup (OccurrenceDeduper, right for chat) on reactions (M5) would mis-handle a reaction animation spanning two polls.
+- **Rule:** Chat = persistent list → occurrence-counted content key. Reactions = transient animation → rising-edge dedup (emit when present-now-absent-last-poll). Hand raises = stateful open/close with history → per-participant open+completed lists (M10), never a single Map entry that a re-raise overwrites.
+
+### Divide by the actual iteration count, not the intended sample cap
+- **Mistake:** `isSimilar` looped `len/step` times but divided the diff count by `samples` (capped 500). For 500≤len<1000 `step` collapses to 1, so it compared up to 999 bytes while dividing by 500 → ~2× inflated ratio, near-identical small screenshots misread as different (M12).
+- **Rule:** When a sampling loop's real iteration count can diverge from the intended sample count, count iterations and divide by that.
