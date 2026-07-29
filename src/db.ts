@@ -281,6 +281,18 @@ export function getMeetingByEventId(eventId: string): Meeting | undefined {
   return getDb().prepare('SELECT * FROM meetings WHERE calendar_event_id = ?').get(eventId) as Meeting | undefined;
 }
 
+/**
+ * CA4: cross-provider dedup key. The same meeting synced from both M365 and Google carries two
+ * different calendar_event_ids, so the eventId dedup and the D6 UNIQUE index can't see the
+ * collision. Match on join_url + start_time (compared as datetimes so equivalent ISO spellings
+ * still match) to find the already-inserted copy before creating a duplicate row.
+ */
+export function getMeetingByJoinUrlAndTime(joinUrl: string, startTime: string): Meeting | undefined {
+  return getDb().prepare(
+    'SELECT * FROM meetings WHERE join_url = ? AND datetime(start_time) = datetime(?) ORDER BY id LIMIT 1',
+  ).get(joinUrl, startTime) as Meeting | undefined;
+}
+
 export function getMeeting(id: number): Meeting | undefined {
   return getDb().prepare('SELECT * FROM meetings WHERE id = ?').get(id) as Meeting | undefined;
 }

@@ -1,4 +1,4 @@
-import { getMeetingByEventId, insertMeeting, type Meeting, type Attendee } from './db.js';
+import { getMeetingByEventId, getMeetingByJoinUrlAndTime, insertMeeting, type Meeting, type Attendee } from './db.js';
 import { detectPlatform } from './bot.js';
 import { fmtTime } from './config.js';
 import { runCli, CliError } from './runcli.js';
@@ -130,6 +130,9 @@ function persistNew(meetings: NormalizedMeeting[], providerLabel: string): Meeti
   const inserted: Meeting[] = [];
   for (const nm of meetings) {
     if (nm.calendar_event_id && getMeetingByEventId(nm.calendar_event_id)) continue;
+    // CA4: skip if another provider already inserted this same call (same join_url + start_time
+    // under a different event id) — otherwise MiBot joins the meeting twice.
+    if (getMeetingByJoinUrlAndTime(nm.join_url, nm.start_time)) continue;
     const meeting = insertMeeting(nm);
     inserted.push(meeting);
     const attCount = nm.attendees?.length ?? 0;
@@ -137,6 +140,25 @@ function persistNew(meetings: NormalizedMeeting[], providerLabel: string): Meeti
     console.error(`[mibot] Found${providerLabel}: ${meeting.title} (${nm.platform}) at ${fmtTime(nm.start_time)}${attStr}`);
   }
   return inserted;
+}
+
+/**
+ * CA1: parse a calendar CLI's stdout into the events array, rejecting the failure shapes that
+ * were previously swallowed. ms365/gws can exit non-zero and still print valid JSON — either an
+ * error object (`{"error":{…}}`) or an unexpected shape — which the old `data.value || []` read
+ * as "zero meetings, no error". Here an error payload or a shape with no events array throws, so
+ * syncCalendar's catch logs and surfaces it instead of silently dropping the day's meetings.
+ */
+export function parseEventsPayload(stdout: string): Record<string, any>[] {
+  const data = JSON.parse(stdout); // throws on non-JSON — caught upstream
+  if (data && typeof data === 'object' && 'error' in data) {
+    const code = (data as any).error?.code || (data as any).error?.message || 'unknown';
+    throw new Error(`calendar API returned an error payload: ${code}`);
+  }
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.value)) return data.value; // M365 Graph
+  if (Array.isArray(data?.items)) return data.items; // Google
+  throw new Error(`calendar response had no events array (keys: ${Object.keys(data ?? {}).join(',') || 'none'})`);
 }
 
 // ── Provider adapters: native event → RawCalendarEvent[] ────────────────
@@ -250,8 +272,7 @@ async function syncGoogleCalendar(): Promise<Meeting[]> {
   ]);
 
   if (!stdout.trim()) return [];
-  const data = JSON.parse(stdout);
-  const events: Record<string, any>[] = data.items || (Array.isArray(data) ? data : []);
+  const events = parseEventsPayload(stdout);
   return persistNew(normalizeEvents(events.map(googleToRaw)), ' (Google)');
 }
 
@@ -269,8 +290,7 @@ async function syncM365Calendar(): Promise<Meeting[]> {
   ]);
 
   if (!stdout.trim()) return [];
-  const data = JSON.parse(stdout);
-  const events: Record<string, unknown>[] = Array.isArray(data) ? data : data.value || [];
+  const events = parseEventsPayload(stdout);
   return persistNew(normalizeEvents(events.map(m365ToRaw)), '');
 }
 
