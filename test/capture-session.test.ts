@@ -24,7 +24,7 @@ function makeSession(opts: Partial<Parameters<typeof CaptureSession.prototype.co
     flush,
     setInterval: (fn: () => void) => { timers.push(fn); return timers.length as any; },
     clearInterval: () => {},
-    fileSize: () => 0, // webrtc file "empty" → keep ffmpeg audio by default
+    duration: () => null, // nothing measurable → keep ffmpeg audio by default
     copyFile: vi.fn(),
     ...opts,
   });
@@ -93,17 +93,21 @@ describe('R2 CaptureSession (per-bot, no singletons)', () => {
     expect(recorder.stopped).toBe(true);
   });
 
-  it('prefers the webrtc capture only when it has real content', async () => {
+  it('prefers the webrtc capture when it is the longer recording (AU10)', async () => {
     const copyFile = vi.fn();
-    const { session } = makeSession({ copyFile, fileSize: () => 5000 });
+    // webrtc 3600s, ffmpeg produced nothing (null) → prefer webrtc
+    const duration = (p: string) => (p.includes('-webrtc') ? 3600 : null);
+    const { session } = makeSession({ copyFile, duration });
     session.start();
     await session.stop();
     expect(copyFile).toHaveBeenCalledWith('/tmp/a-webrtc.webm', '/tmp/a.webm');
   });
 
-  it('keeps the ffmpeg recording when webrtc file is empty/tiny', async () => {
+  it('never overwrites a longer ffmpeg recording with a short webrtc stub (AU10)', async () => {
     const copyFile = vi.fn();
-    const { session } = makeSession({ copyFile, fileSize: () => 200 });
+    // webrtc 2s stub vs a full 3600s ffmpeg recording → keep ffmpeg
+    const duration = (p: string) => (p.includes('-webrtc') ? 2 : 3600);
+    const { session } = makeSession({ copyFile, duration });
     session.start();
     await session.stop();
     expect(copyFile).not.toHaveBeenCalled();

@@ -107,14 +107,14 @@
 - [x] R3 — managed ffmpeg wrapper (error/exit/SIGKILL) · blockedBy: FA
 - [x] R2 — per-bot capture sessions, no singletons (AR3) · blockedBy: R3
 - [x] AU1 P0 — Zoom iframe produces no WebRTC audio · blockedBy: FA
-- [ ] DRAIN — AU3/AU8/AU12 one drain protocol (OQ5 stop-and-drain) · blockedBy: FA
+- [x] DRAIN — AU3/AU8/AU12 one drain protocol (OQ5 stop-and-drain) · blockedBy: FA
 - [ ] AU10 P2 — never overwrite longer capture (ffprobe duration) · blockedBy: R2
 - [x] AU2 P1 — hook destroyed by goto · blockedBy: FA
 - [x] AU4 P1 — stopRecording no await/SIGKILL · blockedBy: R3
 - [x] AU5 P1 — no ffmpeg exit handler · blockedBy: R3
 - [x] AU6 P1 — no ffmpeg error handler · blockedBy: R3
-- [ ] AU7 P2 — FileReader no onerror → hang · blockedBy: FA
-- [ ] AU11 P2 — catch{} swallows flush errors · blockedBy: —
+- [x] AU7 P2 — FileReader no onerror → hang · blockedBy: FA
+- [x] AU11 P2 — catch{} swallows flush errors · blockedBy: —
 - [ ] AU13 P3 — anchored webrtc-path helper (not a bug) · blockedBy: R2
 - [ ] AU14 P3 — cleanupInfra: delete + document (OQ8) · blockedBy: —
 

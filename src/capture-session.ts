@@ -1,5 +1,6 @@
 import type { Page } from 'playwright';
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 import { startRecording, stopRecording } from './recorder.js';
 import { flushAudioToDisk, finalizeAudioDrain } from './webrtc-capture.js';
 
@@ -30,14 +31,28 @@ export interface CaptureSessionDeps {
   finalFlush?: (webrtcAudioPath: string) => Promise<boolean>;
   setInterval: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
   clearInterval: (h: ReturnType<typeof setInterval>) => void;
-  /** Size in bytes of a path (0 if missing). */
-  fileSize: (p: string) => number;
+  /** Decoded duration of a path in seconds, or null if missing/corrupt/unmeasurable (AU10). */
+  duration: (p: string) => number | null;
   copyFile: (src: string, dest: string) => void;
   flushIntervalMs?: number;
 }
 
 const FLUSH_INTERVAL_MS = 15000;
-const MIN_WEBRTC_BYTES = 1000;
+/** AU10: require the webrtc capture to be at least this many seconds longer before overwriting. */
+const MIN_DURATION_MARGIN_SEC = 1;
+
+/**
+ * AU10 — decide whether to replace the ffmpeg recording with the WebRTC capture, by decoded
+ * DURATION rather than byte size. Never overwrite the longer capture: a 2s WebRTC stub must not
+ * clobber a full 1h pulse recording, and a null (missing/corrupt/silent) webrtc file is never
+ * preferred. A missing ffmpeg duration (null) means "nothing usable there" → prefer webrtc if it
+ * has real content.
+ */
+export function shouldPreferWebrtc(d: { webrtcSec: number | null; ffmpegSec: number | null }): boolean {
+  if (!d.webrtcSec || d.webrtcSec <= 0) return false;
+  if (d.ffmpegSec === null) return true;
+  return d.webrtcSec >= d.ffmpegSec + MIN_DURATION_MARGIN_SEC;
+}
 
 export class CaptureSession {
   readonly audioPath: string;
@@ -81,9 +96,29 @@ export class CaptureSession {
     const finalFlush = this.deps.finalFlush ?? this.deps.flush;
     try { await finalFlush(this.webrtcAudioPath); } catch {}
 
-    if (this.deps.fileSize(this.webrtcAudioPath) > MIN_WEBRTC_BYTES) {
+    // AU10: prefer the webrtc capture only when it is genuinely the longer recording.
+    const webrtcSec = this.deps.duration(this.webrtcAudioPath);
+    const ffmpegSec = this.deps.duration(this.audioPath);
+    if (shouldPreferWebrtc({ webrtcSec, ffmpegSec })) {
       this.deps.copyFile(this.webrtcAudioPath, this.audioPath);
     }
+  }
+}
+
+/** Decoded duration in seconds via ffprobe, or null if missing/corrupt/unmeasurable (AU10). */
+export function probeDurationSec(p: string): number | null {
+  if (!fs.existsSync(p)) return null;
+  try {
+    const out = execFileSync('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      p,
+    ], { encoding: 'utf8', timeout: 10000 }).trim();
+    const sec = parseFloat(out);
+    return Number.isFinite(sec) ? sec : null;
+  } catch {
+    return null; // ffprobe missing or file undecodable
   }
 }
 
@@ -113,7 +148,7 @@ export function createCaptureSession(page: Page, audioPath: string): CaptureSess
     finalFlush: (p) => finalizeAudioDrain(page, p),
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (h) => clearInterval(h),
-    fileSize: (p) => (fs.existsSync(p) ? fs.statSync(p).size : 0),
+    duration: (p) => probeDurationSec(p),
     copyFile: (src, dest) => {
       fs.copyFileSync(src, dest);
       console.error('[mibot] Using WebRTC-captured audio');
