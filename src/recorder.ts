@@ -1,5 +1,6 @@
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import { chromium, type Browser, type Page } from 'playwright';
+import { ManagedFfmpeg } from './managed-ffmpeg.js';
 
 // Use Chrome 121 (puppeteer's version) — it works better with Xvfb + PulseAudio
 // Chrome 145 (Playwright's) has issues with the nvidia Xvfb workaround
@@ -15,7 +16,7 @@ const SINK_NAME = 'chromesink';
 
 let xvfbProc: ChildProcess | null = null;
 let pulsePid: number | null = null;
-let ffmpegProc: ChildProcess | null = null;
+let ffmpeg: ManagedFfmpeg | null = null;
 
 /** Ensure Xvfb and PulseAudio are running. Sets process.env.DISPLAY. */
 export function ensureAudioInfra(): void {
@@ -106,7 +107,7 @@ export async function launchBrowser(): Promise<{ browser: Browser; page: Page }>
 
 /** Start recording audio from Chrome via PulseAudio monitor → ffmpeg → file. */
 export function startRecording(outputPath: string): void {
-  ffmpegProc = spawn('ffmpeg', [
+  const proc = spawn('ffmpeg', [
     '-y',
     '-f', 'pulse',
     '-i', `${SINK_NAME}.monitor`,
@@ -120,21 +121,29 @@ export function startRecording(outputPath: string): void {
     env: { ...process.env, PULSE_SERVER },
   });
 
-  ffmpegProc.stderr?.on('data', (data) => {
-    const msg = data.toString().trim();
-    if (msg.includes('Error') || msg.includes('error')) {
-      console.error(`[mibot] ffmpeg: ${msg}`);
-    }
+  // R3 (AU4/AU5/AU6): supervise the child. onError keeps a missing binary from crashing the
+  // bot; onUnexpectedExit surfaces a mid-meeting death (pulse restart, ENOSPC) that would
+  // otherwise be reported as a successful recording.
+  ffmpeg = new ManagedFfmpeg(proc, {
+    onError: (err) => console.error(`[mibot] ffmpeg spawn error: ${err.message}`),
+    onUnexpectedExit: ({ code, signal, stderrTail }) => {
+      console.error(`[mibot] ffmpeg died mid-recording (code=${code} signal=${signal}): ${stderrTail}`);
+    },
   });
 
   console.error(`[mibot] Recording: ${outputPath}`);
 }
 
-/** Stop recording. The file is valid immediately (ffmpeg writes incrementally). */
-export function stopRecording(): void {
-  if (ffmpegProc) {
-    ffmpegProc.kill('SIGINT');
-    ffmpegProc = null;
+/**
+ * Stop recording and WAIT for ffmpeg to finalize the container before returning (AU4).
+ * SIGINT lets ffmpeg write the webm trailer; ManagedFfmpeg escalates to SIGKILL if it hangs,
+ * so callers can safely copy/read the file once this resolves.
+ */
+export async function stopRecording(): Promise<void> {
+  if (ffmpeg) {
+    const m = ffmpeg;
+    ffmpeg = null;
+    await m.stop();
     console.error('[mibot] Recording stopped');
   }
 }

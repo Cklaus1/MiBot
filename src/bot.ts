@@ -261,7 +261,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     throw err;
   } finally {
     clearInterval(heartbeatInterval);
-    stopRecording();
+    await stopRecording();
     if (controlChannel) controlChannel.stop();
     if (browser) await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
     if (camofoxPage) await Promise.race([camofoxPage.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);

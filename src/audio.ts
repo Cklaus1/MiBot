@@ -40,7 +40,7 @@ export async function stopAudioCapture(page: Page, audioPath: string, webrtcAudi
   }
   // Wait for any in-flight flush to complete before final flush
   await flushPromise;
-  stopRecording(); // Stop ffmpeg
+  await stopRecording(); // Stop ffmpeg and wait for it to finalize the container (AU4)
 
   // Final flush of WebRTC audio (append, don't overwrite)
   await flushAudioToDisk(page, webrtcAudioPath).catch(() => {});
