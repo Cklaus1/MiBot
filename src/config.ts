@@ -102,6 +102,17 @@ const NUMERIC_RANGES: Record<string, [number, number]> = {
 const ARRAY_FIELDS = ['botPatterns', 'neverJoin'] as const;
 const BOOL_FIELDS = ['onlyOrganized'] as const;
 
+/** True if `tz` is a valid IANA timezone accepted by Intl (D5). Probes via a throwaway
+ *  formatter — the same call fmtTime makes — so validation matches actual use exactly. */
+export function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Pure config validation (R10): merge a partial (typically parsed from config.json)
  * over DEFAULTS, coercing/clamping every field. Never throws — each invalid field
@@ -111,8 +122,12 @@ export function validateConfig(input: Partial<MiBotConfig>): MiBotConfig {
   const out: MiBotConfig = { ...DEFAULTS };
   const raw = (input ?? {}) as Record<string, unknown>;
 
-  // timezone / botName: non-empty strings only.
-  if (typeof raw.timezone === 'string' && raw.timezone.trim() !== '') out.timezone = raw.timezone;
+  // timezone: must be a valid IANA zone (D5) — an invalid one would crash fmtTime's
+  // Intl.DateTimeFormat at use time, so reject it here and keep the default.
+  if (typeof raw.timezone === 'string' && raw.timezone.trim() !== '' && isValidTimezone(raw.timezone)) {
+    out.timezone = raw.timezone;
+  }
+  // botName: non-empty string only.
   if (typeof raw.botName === 'string' && raw.botName.trim() !== '') out.botName = raw.botName;
 
   // numeric fields: must be finite integers within range.

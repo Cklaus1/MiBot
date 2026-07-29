@@ -16,6 +16,19 @@ describe('validateConfig (R10)', () => {
     expect(c.onlyOrganized).toBe(true);
   });
 
+  // D5: a syntactically-non-empty but invalid IANA timezone used to pass validation and
+  // only crash later inside fmtTime's Intl.DateTimeFormat (RangeError). Reject it at load.
+  it('accepts a valid IANA timezone', () => {
+    expect(validateConfig({ timezone: 'America/New_York' }).timezone).toBe('America/New_York');
+    expect(validateConfig({ timezone: 'Europe/London' }).timezone).toBe('Europe/London');
+    expect(validateConfig({ timezone: 'UTC' }).timezone).toBe('UTC');
+  });
+
+  it('falls back to the default for an invalid timezone (D5)', () => {
+    expect(validateConfig({ timezone: 'Mars/Phobos' }).timezone).toBe(DEFAULTS.timezone);
+    expect(validateConfig({ timezone: 'Not A Zone' }).timezone).toBe(DEFAULTS.timezone);
+  });
+
   it('clamps out-of-range numbers to the default (negative alone timeout)', () => {
     expect(validateConfig({ aloneTimeoutMinutes: -5 }).aloneTimeoutMinutes)
       .toBe(DEFAULTS.aloneTimeoutMinutes);
