@@ -180,7 +180,14 @@ export function updateMeeting(id: number, updates: Record<string, unknown>): voi
     vals.push(new Date().toISOString());
   }
   vals.push(id);
-  db.prepare(`UPDATE meetings SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  const res = db.prepare(`UPDATE meetings SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  warnIfNoOp('meetings', id, res.changes);
+}
+
+/** D8: an UPDATE that matches no rows (stale/wrong id) is a silent no-op that hides a real
+ *  bug — warn, but never throw: a DB warning must not abort the watcher poll. */
+function warnIfNoOp(table: string, id: number, changes: number): void {
+  if (changes === 0) console.error(`[mibot] WARN: update on ${table} id=${id} changed no rows (stale id?)`);
 }
 
 export function updateMeetingStatus(id: number, status: string): void {
@@ -254,7 +261,8 @@ export function updateRecording(id: number, updates: {
   if (updates.status !== undefined) { sets.push('status = ?'); vals.push(updates.status); }
   if (sets.length === 0) return;
   vals.push(id);
-  db.prepare(`UPDATE recordings SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  const res = db.prepare(`UPDATE recordings SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  warnIfNoOp('recordings', id, res.changes);
 }
 
 // ── Reads ─────────────────────────────────────────────────────────────
