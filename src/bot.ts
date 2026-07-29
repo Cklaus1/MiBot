@@ -3,7 +3,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import {
-  insertMeeting, insertRecording, updateMeetingStatus, updateRecording,
+  getOrCreateMeeting, insertRecording, updateMeetingStatus, updateRecording,
   updateMeeting, getMeeting, updateHeartbeat, transaction, applyRecordingStatus,
 } from './db.js';
 import { RECORDING_STATUS } from './status.js';
@@ -47,8 +47,9 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
   const title = opts.title || `${platform} meeting`;
   log.info(`Joining ${platform}: ${title}`, { platform, title });
 
-  // Create DB records
-  const meeting = insertMeeting({
+  // Create DB records. C19: reuse the scheduler's pre-inserted row (keyed by calendar
+  // event id) instead of inserting a duplicate on every (re)join attempt.
+  const meeting = getOrCreateMeeting({
     title, platform, join_url: opts.url,
     start_time: new Date().toISOString(),
     calendar_event_id: opts.calendarEventId,

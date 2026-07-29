@@ -128,6 +128,19 @@ export function insertMeeting(m: {
   return db.prepare('SELECT * FROM meetings WHERE id = ?').get(result.lastInsertRowid) as Meeting;
 }
 
+/**
+ * Get-or-create keyed by calendar_event_id (C19). The scheduler pre-inserts a `scheduled`
+ * row; joinAndRecord must reuse it rather than inserting a duplicate on every (re)join.
+ * Meetings with no event id (manual joins) always insert — they have no dedup key.
+ */
+export function getOrCreateMeeting(m: Parameters<typeof insertMeeting>[0]): Meeting {
+  if (m.calendar_event_id) {
+    const existing = getMeetingByEventId(m.calendar_event_id);
+    if (existing) return existing;
+  }
+  return insertMeeting(m);
+}
+
 const MEETING_COLUMNS = new Set([
   'title', 'platform', 'join_url', 'start_time', 'end_time', 'actual_start', 'actual_end',
   'calendar_event_id', 'organizer', 'organizer_email', 'location', 'description',
