@@ -200,12 +200,21 @@ export function recoverStaleMeetings(): number {
   // D3: a NULL heartbeat must NOT mean "instantly stale" — a bot in the waiting room
   // (`joining`) or a legacy row simply hasn't stamped one yet. Fall back to created_at so
   // every active row gets the same 2-minute grace window before being force-failed.
-  const result = db.prepare(`
-    UPDATE meetings SET status = 'failed'
-    WHERE status IN ('joining', 'in_call', 'processing')
-      AND datetime(COALESCE(heartbeat, created_at)) < datetime('now', '-2 minutes')
-  `).run();
-  return result.changes;
+  // D4: fail the orphan recordings of killed meetings in the SAME transaction, without
+  // downgrading any recording that already reached a terminal status (C7).
+  const staleWhere = `
+    status IN ('joining', 'in_call', 'processing')
+    AND datetime(COALESCE(heartbeat, created_at)) < datetime('now', '-2 minutes')
+  `;
+  const recover = db.transaction(() => {
+    db.prepare(`
+      UPDATE recordings SET status = 'failed'
+      WHERE status NOT IN ('done', 'transcribe_failed', 'no_audio', 'failed')
+        AND meeting_id IN (SELECT id FROM meetings WHERE ${staleWhere})
+    `).run();
+    return db.prepare(`UPDATE meetings SET status = 'failed' WHERE ${staleWhere}`).run().changes;
+  });
+  return recover();
 }
 
 export function insertRecording(r: { meeting_id: number; audio_path: string }): Recording {
