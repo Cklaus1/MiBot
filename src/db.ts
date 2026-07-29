@@ -217,6 +217,21 @@ export function recoverStaleMeetings(): number {
   return recover();
 }
 
+/**
+ * D7: mark overdue `scheduled` meetings as `missed`. getUpcomingMeetings only sees rows
+ * whose start_time is within [now-30min, now+window]; a meeting whose window lapsed (watcher
+ * was down 31+ min) would otherwise sit `scheduled` forever and the table would grow without
+ * bound. Uses the same 30-minute grace as the upcoming lower bound so the two never disagree.
+ */
+export function sweepMissedMeetings(): number {
+  const db = getDb();
+  return db.prepare(`
+    UPDATE meetings SET status = 'missed'
+    WHERE status = 'scheduled'
+      AND datetime(start_time) < datetime('now', '-30 minutes')
+  `).run().changes;
+}
+
 export function insertRecording(r: { meeting_id: number; audio_path: string }): Recording {
   const db = getDb();
   const stmt = db.prepare('INSERT INTO recordings (meeting_id, audio_path) VALUES (?, ?)');

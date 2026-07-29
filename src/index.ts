@@ -2,7 +2,7 @@ import { joinAndRecord, detectPlatform } from './bot.js';
 import { syncCalendar } from './calendar.js';
 import {
   getUpcomingMeetings, listMeetings, listRecordings, getRecordingWithMeeting,
-  recoverStaleMeetings, type Meeting,
+  recoverStaleMeetings, sweepMissedMeetings, type Meeting,
 } from './db.js';
 import { loadConfig, saveDefaultConfig, shouldSkipMeeting, fmtTime } from './config.js';
 import { sendCommand } from './control.js';
@@ -251,6 +251,11 @@ async function startWatcher(): Promise<void> {
   const poll = async () => {
     try {
       await syncCalendar();
+
+      // D7: retire meetings whose window lapsed while the watcher was down (else they
+      // sit `scheduled` forever and the table grows unbounded).
+      const missed = sweepMissedMeetings();
+      if (missed > 0) console.error(`[mibot] Marked ${missed} overdue meeting(s) missed`);
 
       // Recover any bots that died since last poll
       const staleRecovered = recoverStaleMeetings();
