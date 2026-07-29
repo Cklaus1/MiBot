@@ -4,8 +4,9 @@ import os from 'os';
 import fs from 'fs';
 import {
   insertMeeting, insertRecording, updateMeetingStatus, updateRecording,
-  updateMeeting, getMeeting, updateHeartbeat, transaction,
+  updateMeeting, getMeeting, updateHeartbeat, transaction, applyRecordingStatus,
 } from './db.js';
+import { RECORDING_STATUS } from './status.js';
 import { loadConfig, isBot } from './config.js';
 import { SignalTracker } from './signals.js';
 import { launchBrowser, stopRecording } from './recorder.js';
@@ -93,6 +94,8 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       await camofoxPage.close();
       camofoxPage = null;
 
+      const haveAudio = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000;
+
       // Wrap DB updates in transaction to prevent partial writes
       transaction(() => {
         updateMeeting(meeting.id, {
@@ -102,15 +105,18 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
           speaker_timeline: JSON.stringify(result.speakerTimeline),
         });
 
-        if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000) {
-          updateRecording(recording.id, { status: 'recorded' });
-        } else {
-          updateRecording(recording.id, { status: 'no_audio' });
-        }
+        applyRecordingStatus(recording.id, haveAudio ? RECORDING_STATUS.RECORDED : RECORDING_STATUS.NO_AUDIO);
       });
 
       // Write metadata sidecar
       writeMetadata(meeting, recording, opts, platform, title, result);
+
+      // C5: the camofox (Google Meet) path previously jumped straight to 'done'
+      // without ever transcribing. Run the same pipeline as the Playwright path.
+      if (haveAudio) {
+        const outcome = await transcribe(recording.id, audioPath, result.participants, result.speakerTimeline);
+        applyRecordingStatus(recording.id, outcome);
+      }
 
       updateMeetingStatus(meeting.id, 'done');
       return recording.id;
@@ -162,6 +168,8 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       console.error('[mibot] Leaving. Saving audio...');
       await stopAudioCapture(page, audioPath, webrtcAudioPath);
 
+      const haveAudio = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000;
+
       // Wrap DB updates in transaction to prevent partial writes
       transaction(() => {
         updateMeeting(meeting.id, {
@@ -171,14 +179,11 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
           speaker_timeline: JSON.stringify(speakerTimeline),
         });
 
-        if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000) {
-          updateRecording(recording.id, { status: 'recorded' });
-        } else {
-          updateRecording(recording.id, { status: 'failed' });
-        }
+        // 'recorded' is non-terminal (transcribe will advance it); 'no_audio' is terminal.
+        applyRecordingStatus(recording.id, haveAudio ? RECORDING_STATUS.RECORDED : RECORDING_STATUS.NO_AUDIO);
       });
 
-      if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000) {
+      if (haveAudio) {
         const metadataPath = audioPath.replace(/\.\w+$/, '.json');
         const meetingData = getMeeting(meeting.id);
         const metadata = {
@@ -212,16 +217,23 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
       browser = null;
 
-      await transcribe(recording.id, audioPath, trackedParticipants, speakerTimeline);
+      if (haveAudio) {
+        // T1/C7: persist the *outcome* transcribe reports (done / transcribe_failed),
+        // reconciled so a stale 'done' can't clobber a real failure. If there was no
+        // audio, the recording is already terminal ('no_audio') and left untouched.
+        const outcome = await transcribe(recording.id, audioPath, trackedParticipants, speakerTimeline);
+        applyRecordingStatus(recording.id, outcome);
+      }
       updateMeetingStatus(meeting.id, 'done');
-      updateRecording(recording.id, { status: 'done' });
       return recording.id;
     }
 
   } catch (err) {
     log.error(`Bot error: ${(err as Error).message}`, { meetingId: meeting.id });
     updateMeetingStatus(meeting.id, 'failed');
-    updateRecording(recording.id, { status: 'failed' });
+    // C7: never downgrade a recording that already reached a terminal outcome
+    // (done / transcribe_failed / no_audio) just because a later step threw.
+    applyRecordingStatus(recording.id, RECORDING_STATUS.FAILED);
     throw err;
   } finally {
     stopRecording();

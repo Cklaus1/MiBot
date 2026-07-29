@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { isTerminalRecordingStatus, type RecordingStatus } from './status.js';
 
 const DB_DIR = path.join(os.homedir(), '.config', 'mibot');
 const DB_PATH = path.join(DB_DIR, 'mibot.db');
@@ -270,6 +271,24 @@ export function getMeetingByEventId(eventId: string): Meeting | undefined {
 
 export function getMeeting(id: number): Meeting | undefined {
   return getDb().prepare('SELECT * FROM meetings WHERE id = ?').get(id) as Meeting | undefined;
+}
+
+export function getRecording(id: number): Recording | undefined {
+  return getDb().prepare('SELECT * FROM recordings WHERE id = ?').get(id) as Recording | undefined;
+}
+
+/**
+ * The single choke point for recording-status writes (C7/T1). Reconciles the
+ * desired status against what's already persisted so terminal outcomes are never
+ * clobbered: once a recording is done / transcribe_failed / no_audio / failed, a
+ * later write (a stale 'done' after transcribe, or a catch-all 'failed') is ignored.
+ * Returns the status that ended up persisted.
+ */
+export function applyRecordingStatus(id: number, desired: RecordingStatus): RecordingStatus {
+  const current = getRecording(id)?.status as RecordingStatus | undefined;
+  const next = current && isTerminalRecordingStatus(current) ? current : desired;
+  if (next !== current) updateRecording(id, { status: next });
+  return next;
 }
 
 export function listMeetings(limit = 20): Meeting[] {
