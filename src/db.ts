@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { isTerminalRecordingStatus, type RecordingStatus } from './status.js';
+import { runMigrations } from './migrations.js';
 
 const DB_DIR = path.join(os.homedir(), '.config', 'mibot');
 const DB_PATH = path.join(DB_DIR, 'mibot.db');
@@ -20,67 +21,8 @@ export function getDb(): Database.Database {
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
 
-  _db.exec(`
-    CREATE TABLE IF NOT EXISTS meetings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      platform TEXT NOT NULL,
-      join_url TEXT NOT NULL,
-      start_time TEXT NOT NULL,
-      end_time TEXT,
-      actual_start TEXT,
-      actual_end TEXT,
-
-      -- Calendar metadata
-      calendar_event_id TEXT,
-      organizer TEXT,
-      organizer_email TEXT,
-      location TEXT,
-      description TEXT,
-      attendees TEXT,           -- JSON array: [{name, email, status}]
-      is_recurring INTEGER DEFAULT 0,
-      recurrence_id TEXT,
-
-      -- Runtime state
-      status TEXT NOT NULL DEFAULT 'scheduled',
-      participants TEXT,        -- JSON array: [{name, joined_at, left_at, is_bot, spoke}]
-      speaker_timeline TEXT,    -- JSON array: [{speaker, start, end}]
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS recordings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      meeting_id INTEGER NOT NULL REFERENCES meetings(id),
-      audio_path TEXT NOT NULL,
-      transcript_path TEXT,
-      metadata_path TEXT,       -- JSON sidecar with full context
-      duration_seconds INTEGER,
-      status TEXT NOT NULL DEFAULT 'recording',
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_meetings_start ON meetings(start_time);
-    CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
-    CREATE INDEX IF NOT EXISTS idx_recordings_meeting ON recordings(meeting_id);
-  `);
-
-  // Migrate: add columns if they don't exist (safe for existing databases)
-  const cols = _db.prepare("PRAGMA table_info(meetings)").all().map((c: any) => c.name);
-  const newCols: Record<string, string> = {
-    organizer: 'TEXT', organizer_email: 'TEXT', location: 'TEXT', description: 'TEXT',
-    attendees: 'TEXT', is_recurring: 'INTEGER DEFAULT 0', recurrence_id: 'TEXT',
-    participants: 'TEXT', speaker_timeline: 'TEXT', actual_start: 'TEXT', actual_end: 'TEXT',
-    heartbeat: 'TEXT',
-  };
-  for (const [col, type] of Object.entries(newCols)) {
-    if (!cols.includes(col)) {
-      _db.exec(`ALTER TABLE meetings ADD COLUMN ${col} ${type}`);
-    }
-  }
-  const recCols = _db.prepare("PRAGMA table_info(recordings)").all().map((c: any) => c.name);
-  if (!recCols.includes('metadata_path')) {
-    _db.exec('ALTER TABLE recordings ADD COLUMN metadata_path TEXT');
-  }
+  // Schema is owned by the versioned migration runner (F2), keyed on user_version.
+  runMigrations(_db);
 
   return _db;
 }
