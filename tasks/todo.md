@@ -56,7 +56,7 @@
 - [x] D6 P2 — UNIQUE index + dedupe migration · blockedBy: C19 · **gate §5.1 (seeded-dups proof)**
 - [x] CA3 P2 — race dedup: INSERT … ON CONFLICT DO NOTHING · blockedBy: D6
 - [ ] CA4 P2 — cross-provider dedup (join_url + time) · blockedBy: D6, AR7
-- [ ] D3 P1 — stale-heartbeat false-kill · blockedBy: F6
+- [x] D3 P1 — stale-heartbeat false-kill · blockedBy: F6
 - [ ] D4 P2 — orphan recordings row in same txn · blockedBy: F6, F2
 - [ ] D5 P2 — timezone validation at load · blockedBy: F3
 - [ ] D7 P3 — missed-meeting sweep · blockedBy: F2

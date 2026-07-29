@@ -5,19 +5,26 @@ import fs from 'fs';
 import { isTerminalRecordingStatus, type RecordingStatus } from './status.js';
 import { runMigrations } from './migrations.js';
 
-const DB_DIR = path.join(os.homedir(), '.config', 'mibot');
-const DB_PATH = path.join(DB_DIR, 'mibot.db');
+// MIBOT_DB_PATH overrides the DB location (used by the test suite to point each test file
+// at an isolated temp DB instead of the shared ~/.config/mibot/mibot.db, which caused
+// cross-suite flakiness). Resolved lazily at first getDb() so the env can be set by test
+// setup before the connection opens. Production leaves it unset and uses the config dir.
+function resolveDbPath(): string {
+  return process.env.MIBOT_DB_PATH || path.join(os.homedir(), '.config', 'mibot', 'mibot.db');
+}
 
 let _db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (_db) return _db;
 
-  if (!fs.existsSync(DB_DIR)) {
-    fs.mkdirSync(DB_DIR, { recursive: true, mode: 0o700 });
+  const dbPath = resolveDbPath();
+  const dbDir = path.dirname(dbPath);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true, mode: 0o700 });
   }
 
-  _db = new Database(DB_PATH);
+  _db = new Database(dbPath);
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
 
