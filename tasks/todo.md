@@ -60,7 +60,7 @@
 - [x] D4 P2 — orphan recordings row in same txn · blockedBy: F6, F2
 - [x] D5 P2 — timezone validation at load · blockedBy: F3
 - [x] D7 P3 — missed-meeting sweep · blockedBy: F2
-- [ ] D8 P3 — warn on changes===0 · blockedBy: F2
+- [x] D8 P3 — warn on changes===0 · blockedBy: F2
 - [ ] D9 P3 — closeDb on exit (wire, OQ8) · blockedBy: F2, R13
 
 ## Wave 2 — Transcription + Calendar
