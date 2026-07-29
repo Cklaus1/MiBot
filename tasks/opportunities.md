@@ -14,7 +14,12 @@
 _(none yet — appended during the build loop)_
 
 ## Candidate bugs found during build (triage into a future DAG)
-_(none yet — appended during the build loop)_
+- [OPT] test isolation — db.test.ts / recording-status.test.ts / migrations(real-DB paths)
+  all share the on-disk `~/.config/mibot/mibot.db`; observed one transient
+  "1 failed | 4 skipped" run under full-suite concurrency that vanished on re-run
+  (5× clean after). No production impact — purely a test-harness data-sharing race.
+  Fix: point getDb() at a `MIBOT_DB_PATH` env override and give each suite a temp DB.
+  · proposed P3/S (test-infra)
 
 ## Carried architecture items (out of current scope, tracked)
 - [ARCH] control channel — no auth; local-only `0600` socket for now (hardening OQ7 /

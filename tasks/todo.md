@@ -40,16 +40,16 @@
 > Findings are defined in `hardening-spec.md`; refactors `AR*`/`AQ*` in `architecture-spec.md`.
 
 ## Wave 0 — Foundations (unblock everything; no blockedBy)
-- [ ] F1 — status.ts state machine (AR2 + OQ3 enum incl. `no_audio`)
-- [ ] F2 — migration runner (AD6/AQ3, PRAGMA user_version) · **DB critical-path gate §5.1**
-- [ ] F3 — config validate + thread as value (R10/AR8)
-- [ ] F4 — runCli() boundary (R7/AR4)
-- [ ] F5 — LeavePolicy pure function (AD4/AQ2)
-- [ ] F6 — heartbeat-as-liveness, same-statement, BOTH backends (R1/AR6)
+- [x] F1 — status.ts state machine (AR2 + OQ3 enum incl. `no_audio`)
+- [x] F2 — migration runner (AD6/AQ3, PRAGMA user_version) · **DB critical-path gate §5.1**
+- [x] F3 — config validate + thread as value (R10/AR8)
+- [x] F4 — runCli() boundary (R7/AR4)
+- [x] F5 — LeavePolicy pure function (AD4/AQ2)
+- [x] F6 — heartbeat-as-liveness, same-statement, BOTH backends (R1/AR6)
 - [ ] F7 — findElement deadline-poll, .first()-safe (R9)
 - [ ] F8 — Camofox api() centralized validation (R8)
-- [ ] F9 — uniform signal dedup util (R11)
-- [ ] R12 — fmtTime handles all shapes (display-only, D1/CA10, OQ4)
+- [x] F9 — uniform signal dedup util (R11)
+- [x] R12 — fmtTime handles all shapes (display-only, D1/CA10, OQ4)
 
 ## Wave 1 — Data integrity (DB gate §5.1 applies to schema tasks)
 - [ ] C19 P1 — dup-row rejoin loop: reuse scheduled row (bot.ts:50) · blockedBy: F2
@@ -64,11 +64,11 @@
 - [ ] D9 P3 — closeDb on exit (wire, OQ8) · blockedBy: F2, R13
 
 ## Wave 2 — Transcription + Calendar
-- [ ] R6 — transcribe() returns outcome enum · blockedBy: F1
-- [ ] T1 P1 — failed/skipped recorded as done · blockedBy: R6
+- [x] R6 — transcribe() returns outcome enum · blockedBy: F1
+- [x] T1 P1 — failed/skipped recorded as done · blockedBy: R6
 - [ ] T2 P1 — exit-0 with no output = success · blockedBy: R6, F4
-- [ ] C5 P1 — camofox path never transcribes · blockedBy: R6, F6
-- [ ] C7 P2 — catch clobbers terminal status · blockedBy: R6, F1
+- [x] C5 P1 — camofox path never transcribes · blockedBy: R6, F6
+- [x] C7 P2 — catch clobbers terminal status · blockedBy: R6, F1
 - [ ] T3 P1 — --db absolute path · blockedBy: F4
 - [ ] T4 P2 — label calls swallow errors + no timeout · blockedBy: F4
 - [ ] T5 P2 — option-injection via display name (`--`) · blockedBy: F4
@@ -93,7 +93,7 @@
 - [ ] M2 P1 — waitForTimeout reject → finalize · blockedBy: —
 - [ ] M6 P2 — first-60s skips whole loop body · blockedBy: —
 - [ ] M8 P2 — mkdir outside try crashes poll · blockedBy: —
-- [ ] M4 P1 — chat DOM-index dedup (Teams virtualization) · blockedBy: F9
+- [x] M4 P1 — chat DOM-index dedup (Teams virtualization) · blockedBy: F9
 - [ ] M5 P1 — hand-as-reaction spam · blockedBy: F9
 - [ ] M10 P2 — hand re-raise overwrite · blockedBy: F9
 - [ ] M11 P2 — Meet chat sender closest() (needs-repro) · blockedBy: —

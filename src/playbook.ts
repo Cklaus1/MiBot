@@ -1,8 +1,9 @@
-import type { Page, Frame } from 'playwright';
+import type { Page, Frame, Locator } from 'playwright';
 import type { CamofoxPage } from './camofox.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { pollForFirst } from './poll.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -333,16 +334,15 @@ export class PlaybookEngine {
         console.error(`[playbook] Step ${num}: navigated to ${url.substring(0, 60)}`);
         if (step.wait_for) {
           const waitText = this.interpolate(step.wait_for);
-          const frames = this.getFrames('any');
-          let found = false;
-          for (const frame of frames) {
-            const loc = frame.locator(`text=${waitText}`).first();
-            if (await loc.isVisible({ timeout }).catch(() => false)) {
-              found = true;
-              break;
-            }
-          }
-          if (!found) {
+          // J8: poll all frames to the deadline (was a single no-wait probe → 0 actual
+          // waiting after navigation, racing every subsequent step against an unloaded page).
+          const match = await pollForFirst(
+            this.getFrames('any'),
+            async (frame) =>
+              frame.locator(`text=${waitText}`).first().isVisible({ timeout: 1000 }).catch(() => false),
+            { deadlineMs: timeout, intervalMs: 250 },
+          );
+          if (!match) {
             console.error(`[playbook] Step ${num}: wait_for "${waitText}" not found (continuing)`);
           }
         }
@@ -354,15 +354,16 @@ export class PlaybookEngine {
           await this.page.waitForTimeout(step.delay);
           return;
         }
-        if (step.text || step.selector || step.role) {
+        if (step.text || step.selector || step.role || step.xpath || step.near_text) {
+          // findElement already polls to the deadline; a non-null result is visible.
           const loc = await this.findElement(step);
-          await loc.waitFor({ state: 'visible', timeout });
+          if (!loc) throw new Error(`wait: ${this.describeTarget(step)} not found within ${timeout}ms`);
           console.error(`[playbook] Step ${num}: waited for element`);
         }
         return;
 
       case 'click': {
-        const loc = await this.findElement(step);
+        const loc = await this.requireElement(step);
         await loc.click({ force: step.force, timeout });
         console.error(`[playbook] Step ${num}: clicked ${this.describeTarget(step)}`);
         return;
@@ -383,7 +384,7 @@ export class PlaybookEngine {
       }
 
       case 'fill': {
-        const loc = await this.findElement(step);
+        const loc = await this.requireElement(step);
         await loc.click({ timeout });
         await loc.fill(this.interpolate(step.value || ''));
         console.error(`[playbook] Step ${num}: filled ${this.describeTarget(step)}`);
@@ -393,7 +394,7 @@ export class PlaybookEngine {
       case 'type': {
         const value = this.interpolate(step.value || '');
         if (step.text || step.selector || step.role || step.near_text) {
-          const loc = await this.findElement(step);
+          const loc = await this.requireElement(step);
           await loc.click({ timeout });
         }
         await this.page.keyboard.type(value);
@@ -443,22 +444,31 @@ export class PlaybookEngine {
     }
   }
 
-  /** Find an element across frames based on step targeting options. */
-  private async findElement(step: PlaybookStep) {
+  /**
+   * Find a visible element across frames (R9). Polls every candidate frame to a deadline
+   * instead of probing each once, and returns null when nothing matches — rather than the
+   * old behaviour of falling back to an arbitrary last frame (J5) and waiting there.
+   */
+  private async findElement(step: PlaybookStep): Promise<Locator | null> {
     const frames = this.getFrames(step.frame);
+    const deadlineMs = step.timeout || 10000;
 
-    for (const frame of frames) {
-      try {
-        const loc = this.buildLocator(frame, step);
-        if (await loc.isVisible({ timeout: Math.min(step.timeout || 10000, 5000) }).catch(() => false)) {
-          return loc;
-        }
-      } catch {
-        continue;
-      }
-    }
+    const match = await pollForFirst(
+      frames,
+      async (frame) =>
+        this.buildLocator(frame, step).isVisible({ timeout: 1000 }).catch(() => false),
+      { deadlineMs, intervalMs: 250 },
+    );
 
-    return this.buildLocator(frames[frames.length - 1], step);
+    return match ? this.buildLocator(match, step) : null;
+  }
+
+  /** findElement, but throw a clear error instead of returning null (for action steps
+   *  that cannot proceed without a target). */
+  private async requireElement(step: PlaybookStep): Promise<Locator> {
+    const loc = await this.findElement(step);
+    if (!loc) throw new Error(`${this.describeTarget(step)} not found within ${step.timeout || 10000}ms`);
+    return loc;
   }
 
   /** Build a Playwright locator from step targeting options. */
@@ -467,7 +477,9 @@ export class PlaybookEngine {
       const opts: any = {};
       if (step.name) opts.name = step.name;
       if (step.exact) opts.exact = true;
-      return frame.getByRole(step.role as any, opts);
+      // .first() (J9): Teams renders duplicate controls (e.g. two "Join now"); without it
+      // Playwright throws a strict-mode violation when 2+ elements match.
+      return frame.getByRole(step.role as any, opts).first();
     }
     if (step.near_text) {
       return frame.locator(`text=${step.near_text}`).locator('xpath=following::input[1]');
@@ -480,7 +492,7 @@ export class PlaybookEngine {
     }
     if (step.text) {
       if (step.exact) {
-        return frame.getByText(step.text, { exact: true });
+        return frame.getByText(step.text, { exact: true }).first();
       }
       return frame.locator(`text=${step.text}`).first();
     }
