@@ -43,7 +43,7 @@ export interface MiBotConfig {
   minAttendees: number;
 }
 
-const DEFAULTS: MiBotConfig = {
+export const DEFAULTS: MiBotConfig = {
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   botName: 'MiBot',
   joinBeforeMinutes: 2,
@@ -87,6 +87,59 @@ const DEFAULTS: MiBotConfig = {
   minAttendees: 0,
 };
 
+/** Numeric fields and their valid [min, max] ranges (inclusive). Anything outside the
+ *  range, non-numeric, or non-integer falls back to the default for that field. */
+const NUMERIC_RANGES: Record<string, [number, number]> = {
+  joinBeforeMinutes: [0, 60],
+  pollMinutes: [1, 60],
+  maxDurationHours: [1, 24],
+  leaveGracePeriodSeconds: [5, 600],
+  aloneTimeoutMinutes: [1, 240],
+  minHumansToStay: [0, 100],
+  minAttendees: [0, 100],
+};
+
+const ARRAY_FIELDS = ['botPatterns', 'neverJoin'] as const;
+const BOOL_FIELDS = ['onlyOrganized'] as const;
+
+/**
+ * Pure config validation (R10): merge a partial (typically parsed from config.json)
+ * over DEFAULTS, coercing/clamping every field. Never throws — each invalid field
+ * independently falls back to its default, so a single bad key can't crash startup.
+ */
+export function validateConfig(input: Partial<MiBotConfig>): MiBotConfig {
+  const out: MiBotConfig = { ...DEFAULTS };
+  const raw = (input ?? {}) as Record<string, unknown>;
+
+  // timezone / botName: non-empty strings only.
+  if (typeof raw.timezone === 'string' && raw.timezone.trim() !== '') out.timezone = raw.timezone;
+  if (typeof raw.botName === 'string' && raw.botName.trim() !== '') out.botName = raw.botName;
+
+  // numeric fields: must be finite integers within range.
+  for (const [field, [min, max]] of Object.entries(NUMERIC_RANGES)) {
+    const v = raw[field];
+    if (typeof v === 'number' && Number.isFinite(v) && Number.isInteger(v) && v >= min && v <= max) {
+      (out as any)[field] = v;
+    }
+  }
+
+  // array-of-strings fields: must be arrays; non-string entries are dropped.
+  for (const field of ARRAY_FIELDS) {
+    const v = raw[field];
+    if (Array.isArray(v)) {
+      (out as any)[field] = v.filter((x): x is string => typeof x === 'string');
+    }
+  }
+
+  // boolean fields: must be real booleans (a truthy string must not become true).
+  for (const field of BOOL_FIELDS) {
+    const v = raw[field];
+    if (typeof v === 'boolean') (out as any)[field] = v;
+  }
+
+  return out;
+}
+
 let _config: MiBotConfig | null = null;
 
 export function loadConfig(): MiBotConfig {
@@ -101,6 +154,10 @@ export function loadConfig(): MiBotConfig {
     }
   }
 
+  // R10: validate/clamp file config (defends against a hand-edited config.json) before
+  // env vars layer on top. validateConfig already merges over DEFAULTS field-by-field.
+  const validated = validateConfig(fileConfig);
+
   // Env vars override file config (with validation)
   const env = process.env;
   const safeInt = (val: string | undefined, min = 0, max = 10000): number | undefined => {
@@ -110,8 +167,7 @@ export function loadConfig(): MiBotConfig {
   };
 
   _config = {
-    ...DEFAULTS,
-    ...fileConfig,
+    ...validated,
     ...(env.MIBOT_TIMEZONE ? { timezone: env.MIBOT_TIMEZONE } : {}),
     ...(env.MIBOT_NAME ? { botName: env.MIBOT_NAME } : {}),
     ...(safeInt(env.MIBOT_JOIN_BEFORE, 0, 60) !== undefined ? { joinBeforeMinutes: safeInt(env.MIBOT_JOIN_BEFORE, 0, 60)! } : {}),
