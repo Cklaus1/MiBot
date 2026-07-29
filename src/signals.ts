@@ -1,6 +1,7 @@
 import { type Page } from 'playwright';
 import fs from 'fs';
 import path from 'path';
+import { OccurrenceDeduper } from './signal-dedup.js';
 
 /**
  * Compute a perceptual hash of a JPEG image buffer.
@@ -94,7 +95,10 @@ export class SignalTracker {
   private handRaises = new Map<string, HandRaise>();
   private currentShare: ScreenShare | null = null;
   private completedShares: ScreenShare[] = [];
-  private seenChatHashes = new Set<string>();
+  // M4/R11: content-stable, occurrence-counted chat dedup (survives chat virtualization).
+  private chatDedup = new OccurrenceDeduper<{ sender: string; text: string }>(
+    (m) => `${m.sender}::${m.text}`,
+  );
   private screenshotDir: string;
   private screenshotInterval = 30_000; // 30 seconds
   private lastScreenshot = 0;
@@ -165,16 +169,13 @@ export class SignalTracker {
       return results;
     }, platform).catch(() => []);
 
-    // Dedup by content hash + position (allows identical messages from same person)
+    // M4/R11: dedup on stable content with an occurrence counter, so chat virtualization
+    // (which shifts DOM indices as the panel scrolls) no longer re-emits the whole window,
+    // while a genuinely repeated identical message still counts as new.
     const now = new Date().toISOString();
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      const hash = `${msg.sender}::${msg.text}::${i}`;
-      if (!this.seenChatHashes.has(hash)) {
-        this.seenChatHashes.add(hash);
-        this.chat.push({ sender: msg.sender, text: msg.text, timestamp: now });
-        console.error(`[mibot] Chat: ${msg.sender}: ${msg.text.substring(0, 80)}`);
-      }
+    for (const msg of this.chatDedup.add(messages)) {
+      this.chat.push({ sender: msg.sender, text: msg.text, timestamp: now });
+      console.error(`[mibot] Chat: ${msg.sender}: ${msg.text.substring(0, 80)}`);
     }
   }
 
