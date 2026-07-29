@@ -30,6 +30,9 @@ export const MEETING_STATUS = {
   DONE: 'done',
   FAILED: 'failed',
   MISSED: 'missed',
+  // CA2: the organizer cancelled the event before it started (its id left the sync window
+  // while still 'scheduled'). Terminal — MiBot must not join it.
+  CANCELLED: 'cancelled',
 } as const;
 
 export type MeetingStatus =
@@ -55,16 +58,18 @@ const TERMINAL_MEETING: ReadonlySet<MeetingStatus> = new Set([
   MEETING_STATUS.DONE,
   MEETING_STATUS.FAILED,
   MEETING_STATUS.MISSED,
+  MEETING_STATUS.CANCELLED,
 ]);
 
 const MEETING_TRANSITIONS: Readonly<Record<MeetingStatus, readonly MeetingStatus[]>> = {
-  scheduled: ['joining', 'missed', 'failed'],
+  scheduled: ['joining', 'missed', 'failed', 'cancelled'],
   joining: ['in_call', 'failed', 'missed'],
   in_call: ['processing', 'failed'],
   processing: ['done', 'failed'],
   done: [],
   failed: [],
   missed: [],
+  cancelled: [],
 };
 
 export function isTerminalRecordingStatus(s: RecordingStatus): boolean {

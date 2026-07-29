@@ -297,6 +297,30 @@ export function getMeeting(id: number): Meeting | undefined {
   return getDb().prepare('SELECT * FROM meetings WHERE id = ?').get(id) as Meeting | undefined;
 }
 
+/**
+ * CA2: the still-schedulable calendar_event_ids for one provider (by id prefix, e.g. 'm365:').
+ * These are the rows the reconciler compares against the current sync window — any that no
+ * longer appear in the window is a cancellation candidate. Only 'scheduled' rows qualify: a
+ * meeting already joining/in_call/done must not be retroactively cancelled.
+ */
+export function getScheduledEventIds(prefix: string): string[] {
+  const rows = getDb().prepare(
+    `SELECT calendar_event_id FROM meetings
+     WHERE status = 'scheduled' AND calendar_event_id LIKE ? || '%'`,
+  ).all(prefix) as { calendar_event_id: string }[];
+  return rows.map((r) => r.calendar_event_id);
+}
+
+/** CA2: mark a still-scheduled meeting cancelled (organizer removed it before it started).
+ *  Guarded on status='scheduled' so a race with join can't cancel a live meeting. */
+export function cancelMeeting(eventId: string): boolean {
+  const res = getDb().prepare(
+    `UPDATE meetings SET status = 'cancelled', heartbeat = ?
+     WHERE calendar_event_id = ? AND status = 'scheduled'`,
+  ).run(new Date().toISOString(), eventId);
+  return res.changes > 0;
+}
+
 export function getRecording(id: number): Recording | undefined {
   return getDb().prepare('SELECT * FROM recordings WHERE id = ?').get(id) as Recording | undefined;
 }

@@ -1,4 +1,7 @@
-import { getMeetingByEventId, getMeetingByJoinUrlAndTime, insertMeeting, type Meeting, type Attendee } from './db.js';
+import {
+  getMeetingByEventId, getMeetingByJoinUrlAndTime, getScheduledEventIds, cancelMeeting,
+  insertMeeting, updateMeeting, type Meeting, type Attendee,
+} from './db.js';
 import { detectPlatform } from './bot.js';
 import { fmtTime } from './config.js';
 import { runCli, CliError } from './runcli.js';
@@ -124,12 +127,47 @@ export function normalizeEvents(events: RawCalendarEvent[]): NormalizedMeeting[]
   return out;
 }
 
-/** Insert normalized meetings that aren't already in the db, logging each. Shared by both
- *  providers so the "skip-if-seen → insert → log" tail lives once, not per-provider. */
+/** The joinable fields worth reconciling when a calendar event changes (CA2). */
+type MeetingDiff = Partial<Pick<NormalizedMeeting, 'start_time' | 'end_time' | 'join_url' | 'title'>>;
+
+/**
+ * CA2: compute what changed on a still-scheduled meeting between the stored row and the freshly
+ * synced event. Returns only the fields that actually differ (times compared as instants so
+ * equivalent ISO spellings don't churn), or null when nothing joinable changed. A meeting that
+ * already left 'scheduled' is never rescheduled — it's mid-flight and its start is now history.
+ */
+export function diffMeetingFields(existing: Meeting, incoming: NormalizedMeeting): MeetingDiff | null {
+  if (existing.status !== 'scheduled') return null;
+  const diff: MeetingDiff = {};
+  const sameInstant = (a: string | null, b: string | undefined) =>
+    (a ?? null) === (b ?? null) || (!!a && !!b && new Date(a).getTime() === new Date(b).getTime());
+  if (!sameInstant(existing.start_time, incoming.start_time)) diff.start_time = incoming.start_time;
+  if (!sameInstant(existing.end_time, incoming.end_time)) diff.end_time = incoming.end_time ?? undefined;
+  if (existing.join_url !== incoming.join_url) diff.join_url = incoming.join_url;
+  if (existing.title !== incoming.title) diff.title = incoming.title;
+  return Object.keys(diff).length > 0 ? diff : null;
+}
+
+/**
+ * Insert new meetings and reconcile changed ones (CA2). Shared by both providers so the
+ * "known event → reschedule; unknown event → insert (with CA4 cross-provider guard)" logic
+ * lives once. Returns the rows that were newly inserted.
+ */
 function persistNew(meetings: NormalizedMeeting[], providerLabel: string): Meeting[] {
   const inserted: Meeting[] = [];
   for (const nm of meetings) {
-    if (nm.calendar_event_id && getMeetingByEventId(nm.calendar_event_id)) continue;
+    // CA2: a known event id may have been rescheduled/renamed — update in place instead of skip.
+    if (nm.calendar_event_id) {
+      const existing = getMeetingByEventId(nm.calendar_event_id);
+      if (existing) {
+        const diff = diffMeetingFields(existing, nm);
+        if (diff) {
+          updateMeeting(existing.id, diff);
+          console.error(`[mibot] Updated${providerLabel}: ${nm.title} — ${Object.keys(diff).join(', ')} changed`);
+        }
+        continue;
+      }
+    }
     // CA4: skip if another provider already inserted this same call (same join_url + start_time
     // under a different event id) — otherwise MiBot joins the meeting twice.
     if (getMeetingByJoinUrlAndTime(nm.join_url, nm.start_time)) continue;
@@ -140,6 +178,20 @@ function persistNew(meetings: NormalizedMeeting[], providerLabel: string): Meeti
     console.error(`[mibot] Found${providerLabel}: ${meeting.title} (${nm.platform}) at ${fmtTime(nm.start_time)}${attStr}`);
   }
   return inserted;
+}
+
+/**
+ * CA2: cancel scheduled meetings whose event id was present before but has now disappeared from
+ * this provider's sync window (organizer deleted the event). `seenIds` is every event id the
+ * current sync returned for `prefix`; any still-scheduled row under that prefix not in the set
+ * is marked cancelled so MiBot doesn't join a meeting that no longer exists.
+ */
+function cancelDisappeared(prefix: string, seenIds: Set<string>): void {
+  for (const id of getScheduledEventIds(prefix)) {
+    if (!seenIds.has(id) && cancelMeeting(id)) {
+      console.error(`[mibot] Cancelled: event ${id} left the calendar window`);
+    }
+  }
 }
 
 /**
@@ -273,7 +325,7 @@ async function syncGoogleCalendar(): Promise<Meeting[]> {
 
   if (!stdout.trim()) return [];
   const events = parseEventsPayload(stdout);
-  return persistNew(normalizeEvents(events.map(googleToRaw)), ' (Google)');
+  return reconcileProvider('gcal:', normalizeEvents(events.map(googleToRaw)), ' (Google)');
 }
 
 /** Sync M365 calendar events via ms365-cli and insert into local db. */
@@ -291,7 +343,19 @@ async function syncM365Calendar(): Promise<Meeting[]> {
 
   if (!stdout.trim()) return [];
   const events = parseEventsPayload(stdout);
-  return persistNew(normalizeEvents(events.map(m365ToRaw)), '');
+  return reconcileProvider('m365:', normalizeEvents(events.map(m365ToRaw)), '');
+}
+
+/**
+ * CA2: one provider's full reconcile pass — insert/update the meetings it returned, then cancel
+ * any scheduled row under this provider's id prefix that the window no longer contains. Runs per
+ * provider so a Google outage never mass-cancels M365 meetings (and vice versa).
+ */
+function reconcileProvider(prefix: string, meetings: NormalizedMeeting[], label: string): Meeting[] {
+  const inserted = persistNew(meetings, label);
+  const seen = new Set(meetings.map((m) => m.calendar_event_id).filter((id): id is string => !!id));
+  cancelDisappeared(prefix, seen);
+  return inserted;
 }
 
 /** Fetch upcoming calendar events from all configured providers and sync to local db. */

@@ -17,7 +17,7 @@ describe('status enums (OQ3 canon)', () => {
 
   it('exposes the canonical meeting statuses', () => {
     expect(new Set(Object.values(MEETING_STATUS))).toEqual(
-      new Set(['scheduled', 'joining', 'in_call', 'processing', 'done', 'failed', 'missed']),
+      new Set(['scheduled', 'joining', 'in_call', 'processing', 'done', 'failed', 'missed', 'cancelled']),
     );
   });
 });
