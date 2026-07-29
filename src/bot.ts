@@ -9,7 +9,7 @@ import {
 import { RECORDING_STATUS } from './status.js';
 import { loadConfig, isBot } from './config.js';
 import { SignalTracker } from './signals.js';
-import { launchBrowser, stopRecording } from './recorder.js';
+import { launchBrowser } from './recorder.js';
 import { installAudioCapture } from './webrtc-capture.js';
 import { PlaybookEngine, CamofoxPlaybookEngine } from './playbook.js';
 import { ControlChannel } from './control.js';
@@ -17,6 +17,7 @@ import { waitForMeetingEnd } from './meeting.js';
 import { LeavePolicy } from './leave-policy.js';
 import { isSimilarImage } from './image-similarity.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
+import type { CaptureSession } from './capture-session.js';
 import { transcribe } from './transcribe.js';
 import { launchCamofox, type CamofoxPage } from './camofox.js';
 import { loadSelectors } from './selectors.js';
@@ -88,6 +89,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
   let controlChannel: ControlChannel | null = null;
   let browser: PWBrowser | null = null;
   let camofoxPage: CamofoxPage | null = null;
+  let captureSession: CaptureSession | null = null;
 
   // D3/R1: one heartbeat interval spans the ENTIRE active lifecycle — joining (waiting
   // room), in_call, and the up-to-30-min processing/transcription phase. Previously it was
@@ -183,14 +185,15 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       updateMeeting(meeting.id, { status: 'in_call', actual_start: new Date().toISOString() });
       console.error('[mibot] In call. Recording...');
 
-      const webrtcAudioPath = startAudioCapture(page, audioPath);
+      captureSession = startAudioCapture(page, audioPath);
       const signalTracker = new SignalTracker(RECORDINGS_DIR, meeting.id);
 
       const { participants: trackedParticipants, speakerTimeline } = await waitForMeetingEnd(page, platform, config, signalTracker);
       const signals = signalTracker.finish();
 
       console.error('[mibot] Leaving. Saving audio...');
-      await stopAudioCapture(page, audioPath, webrtcAudioPath);
+      await stopAudioCapture(captureSession);
+      captureSession = null; // stopped cleanly; finally's safety-net stop is now a no-op
 
       const haveAudio = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000;
 
@@ -261,7 +264,9 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     throw err;
   } finally {
     clearInterval(heartbeatInterval);
-    await stopRecording();
+    // Safety-net: if the happy path didn't already stop the session (error mid-meeting),
+    // stop it here so ffmpeg is finalized and killed. No-op after a clean stop.
+    if (captureSession) await stopAudioCapture(captureSession).catch(() => {});
     if (controlChannel) controlChannel.stop();
     if (browser) await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
     if (camofoxPage) await Promise.race([camofoxPage.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);

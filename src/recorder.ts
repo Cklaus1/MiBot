@@ -16,7 +16,6 @@ const SINK_NAME = 'chromesink';
 
 let xvfbProc: ChildProcess | null = null;
 let pulsePid: number | null = null;
-let ffmpeg: ManagedFfmpeg | null = null;
 
 /** Ensure Xvfb and PulseAudio are running. Sets process.env.DISPLAY. */
 export function ensureAudioInfra(): void {
@@ -105,8 +104,12 @@ export async function launchBrowser(): Promise<{ browser: Browser; page: Page }>
   return { browser, page };
 }
 
-/** Start recording audio from Chrome via PulseAudio monitor → ffmpeg → file. */
-export function startRecording(outputPath: string): void {
+/**
+ * Start recording audio from Chrome via PulseAudio monitor → ffmpeg → file.
+ * R2 (C4): returns the per-recording handle instead of storing a module singleton, so
+ * concurrent bots each own their own ffmpeg — stopping one never touches another.
+ */
+export function startRecording(outputPath: string): ManagedFfmpeg {
   const proc = spawn('ffmpeg', [
     '-y',
     '-f', 'pulse',
@@ -124,7 +127,7 @@ export function startRecording(outputPath: string): void {
   // R3 (AU4/AU5/AU6): supervise the child. onError keeps a missing binary from crashing the
   // bot; onUnexpectedExit surfaces a mid-meeting death (pulse restart, ENOSPC) that would
   // otherwise be reported as a successful recording.
-  ffmpeg = new ManagedFfmpeg(proc, {
+  const ffmpeg = new ManagedFfmpeg(proc, {
     onError: (err) => console.error(`[mibot] ffmpeg spawn error: ${err.message}`),
     onUnexpectedExit: ({ code, signal, stderrTail }) => {
       console.error(`[mibot] ffmpeg died mid-recording (code=${code} signal=${signal}): ${stderrTail}`);
@@ -132,18 +135,17 @@ export function startRecording(outputPath: string): void {
   });
 
   console.error(`[mibot] Recording: ${outputPath}`);
+  return ffmpeg;
 }
 
 /**
- * Stop recording and WAIT for ffmpeg to finalize the container before returning (AU4).
+ * Stop a recording and WAIT for ffmpeg to finalize the container before returning (AU4).
  * SIGINT lets ffmpeg write the webm trailer; ManagedFfmpeg escalates to SIGKILL if it hangs,
  * so callers can safely copy/read the file once this resolves.
  */
-export async function stopRecording(): Promise<void> {
+export async function stopRecording(ffmpeg: ManagedFfmpeg | null): Promise<void> {
   if (ffmpeg) {
-    const m = ffmpeg;
-    ffmpeg = null;
-    await m.stop();
+    await ffmpeg.stop();
     console.error('[mibot] Recording stopped');
   }
 }
