@@ -42,6 +42,23 @@ function stripHtml(html: string): string {
 }
 
 /**
+ * CA6: decode the HTML entities that matter for URLs before extraction. A meeting link inside
+ * an HTML body arrives as `…?pwd=a&amp;role=1`; the URL charset would capture the literal
+ * `&amp;`, storing a broken join_url. Decode ampersand (named + numeric) and the common
+ * entities so the regex sees a real URL. Applied only to HTML-bearing candidates (body/desc).
+ */
+export function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'");
+}
+
+/**
  * AR7 seam — provider-neutral calendar event. M365 and Google each map their native shape
  * to this; the single normalizer below turns a batch of these into insertable meetings.
  * `urlCandidates` is ordered by platform precedence; `description` may still contain HTML.
@@ -50,7 +67,9 @@ export interface RawCalendarEvent {
   calendar_event_id: string;
   title: string;
   urlCandidates: (string | undefined | null)[];
-  start_time: string;
+  /** CA8: undefined for all-day / start-less events; the normalizer drops these rather than
+   *  fabricating a midnight or now() start that would trigger an immediate join. */
+  start_time?: string;
   end_time?: string;
   organizer?: string;
   organizer_email?: string;
@@ -75,6 +94,8 @@ export function normalizeEvents(events: RawCalendarEvent[]): NormalizedMeeting[]
   const out: NormalizedMeeting[] = [];
   const seen = new Set<string>();
   for (const ev of events) {
+    // CA8: skip all-day / start-less events — no dateTime means no join time.
+    if (!ev.start_time) continue;
     const url = extractMeetingUrl(ev.urlCandidates);
     if (!url) continue;
     const platform = detectPlatform(url);
@@ -136,7 +157,7 @@ function m365Attendees(event: Record<string, unknown>): Attendee[] {
 }
 
 /** Map one M365 Graph event to the provider-neutral RawCalendarEvent. */
-function m365ToRaw(event: Record<string, unknown>): RawCalendarEvent {
+export function m365ToRaw(event: Record<string, unknown>): RawCalendarEvent {
   const loc = event.location as Record<string, unknown> | undefined;
   const body = event.body as Record<string, unknown> | undefined;
   const online = event.onlineMeeting as Record<string, unknown> | undefined;
@@ -147,14 +168,17 @@ function m365ToRaw(event: Record<string, unknown>): RawCalendarEvent {
   return {
     calendar_event_id: `m365:${event.id}`,
     title: (event.subject as string) || 'Untitled meeting',
-    // Precedence: organizer's intended platform (location) first, then body, then the
-    // auto-generated onlineMeeting.joinUrl last — so a Meet link in location wins over Teams.
+    // CA5 precedence: organizer's chosen platform (location, e.g. a pasted Meet link) first,
+    // then the AUTHORITATIVE onlineMeeting.joinUrl, then the body last — so a stale link quoted
+    // in the body can never beat the real joinUrl (the previous order had body before joinUrl).
     urlCandidates: [
       loc?.displayName as string | undefined,
-      body?.content as string | undefined,
       online?.joinUrl as string | undefined,
+      // CA6: the body is HTML — decode entities so `&amp;` in a URL doesn't survive into join_url.
+      body?.content ? decodeHtmlEntities(body.content as string) : undefined,
     ],
-    start_time: (start?.dateTime as string) || new Date().toISOString(),
+    // CA8: no dateTime → undefined (normalizer drops it); don't fabricate a now() start.
+    start_time: (start?.dateTime as string) || undefined,
     end_time: (end?.dateTime as string) || undefined,
     organizer: (orgEa?.name as string) || undefined,
     organizer_email: (orgEa?.address as string) || undefined,
@@ -167,8 +191,13 @@ function m365ToRaw(event: Record<string, unknown>): RawCalendarEvent {
 }
 
 /** Map one Google Calendar event to the provider-neutral RawCalendarEvent. */
-function googleToRaw(event: Record<string, any>): RawCalendarEvent {
-  const candidates: (string | undefined)[] = [event.hangoutLink, event.location, event.description];
+export function googleToRaw(event: Record<string, any>): RawCalendarEvent {
+  const candidates: (string | undefined)[] = [
+    event.hangoutLink,
+    event.location,
+    // CA6: description may carry HTML entities in the URL — decode before extraction.
+    event.description ? decodeHtmlEntities(event.description) : undefined,
+  ];
   if (event.conferenceData?.entryPoints) {
     for (const ep of event.conferenceData.entryPoints) if (ep.uri) candidates.push(ep.uri);
   }
@@ -181,8 +210,10 @@ function googleToRaw(event: Record<string, any>): RawCalendarEvent {
     calendar_event_id: `gcal:${event.id}`,
     title: event.summary || 'Untitled meeting',
     urlCandidates: candidates,
-    start_time: event.start?.dateTime || event.start?.date || new Date().toISOString(),
-    end_time: event.end?.dateTime || event.end?.date || undefined,
+    // CA8: only a real dateTime counts; all-day events (start.date only) get undefined and are
+    // dropped by the normalizer instead of being scheduled for a midnight join.
+    start_time: event.start?.dateTime || undefined,
+    end_time: event.end?.dateTime || undefined,
     organizer: event.organizer?.displayName || undefined,
     organizer_email: event.organizer?.email || undefined,
     location: event.location || undefined,
