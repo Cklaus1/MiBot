@@ -54,7 +54,7 @@
 ## Wave 1 — Data integrity (DB gate §5.1 applies to schema tasks)
 - [x] C19 P1 — dup-row rejoin loop: reuse scheduled row (bot.ts:50) · blockedBy: F2
 - [x] D6 P2 — UNIQUE index + dedupe migration · blockedBy: C19 · **gate §5.1 (seeded-dups proof)**
-- [ ] CA3 P2 — race dedup: INSERT … ON CONFLICT DO NOTHING · blockedBy: D6
+- [x] CA3 P2 — race dedup: INSERT … ON CONFLICT DO NOTHING · blockedBy: D6
 - [ ] CA4 P2 — cross-provider dedup (join_url + time) · blockedBy: D6, AR7
 - [ ] D3 P1 — stale-heartbeat false-kill · blockedBy: F6
 - [ ] D4 P2 — orphan recordings row in same txn · blockedBy: F6, F2

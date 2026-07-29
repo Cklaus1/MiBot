@@ -190,10 +190,13 @@ export function updateHeartbeat(id: number): void {
 
 export function recoverStaleMeetings(): number {
   const db = getDb();
+  // D3: a NULL heartbeat must NOT mean "instantly stale" — a bot in the waiting room
+  // (`joining`) or a legacy row simply hasn't stamped one yet. Fall back to created_at so
+  // every active row gets the same 2-minute grace window before being force-failed.
   const result = db.prepare(`
     UPDATE meetings SET status = 'failed'
     WHERE status IN ('joining', 'in_call', 'processing')
-      AND (heartbeat IS NULL OR datetime(heartbeat) < datetime('now', '-2 minutes'))
+      AND datetime(COALESCE(heartbeat, created_at)) < datetime('now', '-2 minutes')
   `).run();
   return result.changes;
 }

@@ -67,6 +67,12 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
   let browser: PWBrowser | null = null;
   let camofoxPage: CamofoxPage | null = null;
 
+  // D3/R1: one heartbeat interval spans the ENTIRE active lifecycle — joining (waiting
+  // room), in_call, and the up-to-30-min processing/transcription phase. Previously it was
+  // cleared before transcription, so a long transcribe let the heartbeat go stale and
+  // recoverStaleMeetings false-killed the row mid-transcribe. Cleared only in finally.
+  const heartbeatInterval = setInterval(() => updateHeartbeat(meeting.id), 10000);
+
   try {
     // Load playbook for this platform
     const playbook = PlaybookEngine.loadForPlatform(platform);
@@ -156,14 +162,10 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       updateMeeting(meeting.id, { status: 'in_call', actual_start: new Date().toISOString() });
       console.error('[mibot] In call. Recording...');
 
-      // Heartbeat interval — proves bot is alive (for crash detection)
-      const heartbeatInterval = setInterval(() => updateHeartbeat(meeting.id), 10000);
-
       const webrtcAudioPath = startAudioCapture(page, audioPath);
       const signalTracker = new SignalTracker(RECORDINGS_DIR, meeting.id);
 
       const { participants: trackedParticipants, speakerTimeline } = await waitForMeetingEnd(page, platform, config, signalTracker);
-      clearInterval(heartbeatInterval);
       const signals = signalTracker.finish();
 
       console.error('[mibot] Leaving. Saving audio...');
@@ -237,6 +239,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     applyRecordingStatus(recording.id, RECORDING_STATUS.FAILED);
     throw err;
   } finally {
+    clearInterval(heartbeatInterval);
     stopRecording();
     if (controlChannel) controlChannel.stop();
     if (browser) await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
