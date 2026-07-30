@@ -143,15 +143,15 @@
 - [x] C8 P2 — stale-socket sweep kills live sockets · blockedBy: R13 — sweepStaleSockets uses isSocketAlive connect-probe (ECONNREFUSED=stale), skips own + live sockets
 - [x] C9 P2 — sendCmd ok:false → exit 1 · blockedBy: R13 — parseControlResponse throws on ok:false; sendCmd exits 1 instead of printing raw JSON+exit 0
 - [x] C10 P2 — sendCommand no timeout · blockedBy: R13 — client.setTimeout(30s) → rejects "timed out" so `mibot send` can't hang on a wedged page
-- [ ] C11 P2 — JSON.parse(attendees) aborts poll · blockedBy: —
-- [ ] C12 P3 — wrap updateHeartbeat (was false-pos) · blockedBy: —
+- [x] C11 P2 — JSON.parse(attendees) aborts poll · blockedBy: — — safeParseArray in prioritizeMeetings + queue-full log; one malformed blob no longer aborts the poll iteration
+- [x] C12 P3 — wrap updateHeartbeat (was false-pos) · blockedBy: — — both updateHeartbeat sites (interval + camofox monitor loop) try/catch+log; SQLite hiccup can't crash bot or skip final audio promotion
 - [x] C13 P3 — log flush before exit · blockedBy: R13 — log.close() registered as a shutdown hook (unwinds last, LIFO) so the JSONL stream flushes before exit
 - [ ] C14 P1 — hung Chromium leak on close race · blockedBy: R3
 - [ ] C15 P3 — goto swallows nav (sibling J7) · blockedBy: —
-- [ ] C16 P3 — remove eval from usage (OQ8) · blockedBy: —
-- [ ] C17 P3 — log level validate + date rotate · blockedBy: —
-- [ ] C18 P3 — --title flag parsing · blockedBy: —
-- [ ] C20 P3 — poll re-entrancy guard · blockedBy: —
+- [x] C16 P3 — remove eval from usage (OQ8) · blockedBy: — — dropped `eval <js>` from the CLI usage string (handleCommand has no eval case; OQ8 keeps it unimplemented)
+- [x] C17 P3 — log level validate + date rotate · blockedBy: — — resolveLogLevel falls back to info on invalid MIBOT_LOG_LEVEL; getStream recomputes logFileName each write and rotates at midnight
+- [x] C18 P3 — --title flag parsing · blockedBy: — — parseJoinArgs strips --title wherever it sits, takes first non-flag token as URL; last-token --title → undefined title
+- [x] C20 P3 — poll re-entrancy guard · blockedBy: — — `polling` flag skips a tick while the previous async poll is still in flight; released in finally
 
 ## Wave 6 — Structural unification (LAST, optional-in-scope)
 - [ ] AR1 — BrowserBackend contract + unified join/monitor/finalize pipeline (subsumes AD1/AD2/AD3/AD5/AD8/AD9) · blockedBy: F5, R2, F1

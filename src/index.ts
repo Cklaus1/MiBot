@@ -6,6 +6,7 @@ import {
 } from './db.js';
 import { loadConfig, saveDefaultConfig, shouldSkipMeeting, fmtTime } from './config.js';
 import { sendCommand, parseControlResponse } from './control.js';
+import { safeParseArray, parseJoinArgs } from './cli.js';
 import { log } from './log.js';
 import { installShutdownHandlers, registerShutdownHook, runShutdown } from './shutdown.js';
 import { closeDb } from './db.js';
@@ -26,7 +27,7 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'start':    await startWatcher(); break;
-    case 'join':     await joinCommand(args[1], args.includes('--title') ? args[args.indexOf('--title') + 1] : undefined); break;
+    case 'join':     { const j = parseJoinArgs(args.slice(1)); await joinCommand(j.url, j.title); break; }
     case 'meetings': showMeetings(); break;
     case 'recordings': showRecordings(); break;
     case 'show':     showRecording(parseInt(args[1], 10)); break;
@@ -58,7 +59,6 @@ Control commands:
   type "text"                    Type text via keyboard
   fill <selector> <value>        Fill an input
   press <key>                    Press a key (Enter, Escape, Tab)
-  eval <js>                      Run JavaScript in page
   text                           Get visible text from all frames
   frames                         List all frames/iframes
 
@@ -227,9 +227,10 @@ function showConfig(): void {
 /** Sort meetings by priority: more attendees first, then by start time. */
 function prioritizeMeetings(meetings: Meeting[]): Meeting[] {
   return [...meetings].sort((a, b) => {
-    // More attendees = higher priority
-    const aCount = a.attendees ? (JSON.parse(a.attendees) as any[]).length : 0;
-    const bCount = b.attendees ? (JSON.parse(b.attendees) as any[]).length : 0;
+    // More attendees = higher priority. safeParseArray (C11): one malformed attendees
+    // blob must not throw out of the sort and abort the entire poll iteration.
+    const aCount = safeParseArray(a.attendees).length;
+    const bCount = safeParseArray(b.attendees).length;
     if (bCount !== aCount) return bCount - aCount;
     // Earlier start time wins ties
     return new Date(a.start_time).getTime() - new Date(b.start_time).getTime();
@@ -260,7 +261,13 @@ async function startWatcher(): Promise<void> {
   const activeBots = new Set<number>();
   const MAX_CONCURRENT_BOTS = 3;
 
+  // C20: setInterval doesn't serialize an async callback — a slow poll (two 15s CLI
+  // timeouts in syncCalendar) can still be running when the next tick fires, overlapping
+  // two calendar syncs. Skip a tick while the previous one is in flight.
+  let polling = false;
   const poll = async () => {
+    if (polling) { console.error('[mibot] Poll still running, skipping this tick'); return; }
+    polling = true;
     try {
       await syncCalendar();
 
@@ -288,7 +295,7 @@ async function startWatcher(): Promise<void> {
       for (const meeting of prioritized) {
         if (activeBots.has(meeting.id)) continue;
         if (activeBots.size >= MAX_CONCURRENT_BOTS) {
-          const attendeeCount = meeting.attendees ? (JSON.parse(meeting.attendees) as any[]).length : 0;
+          const attendeeCount = safeParseArray(meeting.attendees).length;
           console.error(`[mibot] Queue full (${MAX_CONCURRENT_BOTS}/${MAX_CONCURRENT_BOTS}), deferred: ${meeting.title} (${attendeeCount} attendees)`);
           break;
         }
@@ -316,6 +323,8 @@ async function startWatcher(): Promise<void> {
       }
     } catch (err) {
       console.error(`[mibot] Poll error: ${(err as Error).message}`);
+    } finally {
+      polling = false; // release the re-entrancy guard (C20)
     }
   };
 

@@ -7,15 +7,39 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
 const LOG_DIR = path.join(os.homedir(), '.config', 'mibot', 'logs');
-const level: LogLevel = (process.env.MIBOT_LOG_LEVEL as LogLevel) || 'info';
+
+/**
+ * Validate MIBOT_LOG_LEVEL against the known set, falling back to 'info' (C17).
+ * The old `env as LogLevel || 'info'` cast any string through, so a typo like
+ * `verbose` made `LEVEL_ORDER[lvl]` undefined and the `< undefined` filter test
+ * always false → nothing was filtered and debug spam shipped.
+ */
+export function resolveLogLevel(raw: string | undefined): LogLevel {
+  return raw && raw in LEVEL_ORDER ? (raw as LogLevel) : 'info';
+}
+
+/** Dated log filename — pure fn of the date so the writer can rotate at midnight (C17). */
+export function logFileName(date: Date): string {
+  return `mibot-${date.toISOString().slice(0, 10)}.jsonl`;
+}
+
+const level: LogLevel = resolveLogLevel(process.env.MIBOT_LOG_LEVEL);
 
 let stream: fs.WriteStream | null = null;
+let streamName: string | null = null;
 
 function getStream(): fs.WriteStream {
+  const name = logFileName(new Date());
+  // Rotate when the day rolls over: a long `mibot start` must not keep writing to
+  // yesterday's file (C17). Reopening on a name change closes the stale stream.
+  if (stream && streamName !== name) {
+    stream.end();
+    stream = null;
+  }
   if (!stream) {
     if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
-    const date = new Date().toISOString().slice(0, 10);
-    stream = fs.createWriteStream(path.join(LOG_DIR, `mibot-${date}.jsonl`), { flags: 'a' });
+    stream = fs.createWriteStream(path.join(LOG_DIR, name), { flags: 'a' });
+    streamName = name;
   }
   return stream;
 }

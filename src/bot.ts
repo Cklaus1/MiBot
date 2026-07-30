@@ -106,7 +106,13 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
   // room), in_call, and the up-to-30-min processing/transcription phase. Previously it was
   // cleared before transcription, so a long transcribe let the heartbeat go stale and
   // recoverStaleMeetings false-killed the row mid-transcribe. Cleared only in finally.
-  const heartbeatInterval = setInterval(() => updateHeartbeat(meeting.id), 10000);
+  const heartbeatInterval = setInterval(() => {
+    // C12: an unhandled throw inside a setInterval callback is an uncaught exception —
+    // a transient SQLite hiccup must not crash the whole bot. Swallow + log.
+    try { updateHeartbeat(meeting.id); } catch (err) {
+      log.warn(`Heartbeat update failed: ${(err as Error).message}`, { meetingId: meeting.id });
+    }
+  }, 10000);
 
   try {
     // Load playbook for this platform
@@ -476,8 +482,11 @@ async function monitorCamofoxMeeting(
     await page.waitForTimeout(5000);
     const inWarmup = Date.now() - startTime < MIN_CALL_SECONDS * 1000;
 
-    // Heartbeat — proves bot is alive
-    updateHeartbeat(meetingId);
+    // Heartbeat — proves bot is alive. C12: a transient SQLite error here must not
+    // throw out of the monitor loop and skip the final audio flush + promotion.
+    try { updateHeartbeat(meetingId); } catch (err) {
+      log.warn(`Heartbeat update failed: ${(err as Error).message}`, { meetingId });
+    }
 
     // Check if still in the call. A single flaky miss must NOT end the meeting (M7 debounce
     // lives in LeavePolicy); we track the signal here and let the policy decide at poll end.
