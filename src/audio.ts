@@ -1,5 +1,7 @@
 import { type Page } from 'playwright';
-import { CaptureSession, createCaptureSession } from './capture-session.js';
+import { CaptureSession, createCaptureSession, webrtcAudioPathFor } from './capture-session.js';
+
+export { webrtcAudioPathFor };
 
 /**
  * Audio capture entry points. R2 (AR3): the per-bot state that used to live in module-level
@@ -19,7 +21,7 @@ export async function stopAudioCapture(session: CaptureSession): Promise<void> {
   await session.stop();
 }
 
-/** Get the WebRTC audio path derived from the main audio path. */
+/** @deprecated alias for {@link webrtcAudioPathFor}. */
 export function getWebrtcAudioPath(audioPath: string): string {
-  return audioPath.replace('.webm', '-webrtc.webm');
+  return webrtcAudioPathFor(audioPath);
 }

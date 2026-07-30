@@ -37,6 +37,16 @@ export interface CaptureSessionDeps {
   flushIntervalMs?: number;
 }
 
+/**
+ * AU13 — the single, anchored derivation of the WebRTC sidecar path. Anchored to the trailing
+ * extension so a `.webm` earlier in the path isn't rewritten, and always distinct from the input
+ * so it can never clobber the ffmpeg recording.
+ */
+export function webrtcAudioPathFor(audioPath: string): string {
+  const anchored = audioPath.replace(/\.webm$/, '-webrtc.webm');
+  return anchored === audioPath ? `${audioPath}-webrtc.webm` : anchored;
+}
+
 const FLUSH_INTERVAL_MS = 15000;
 /** AU10: require the webrtc capture to be at least this many seconds longer before overwriting. */
 const MIN_DURATION_MARGIN_SEC = 1;
@@ -65,7 +75,7 @@ export class CaptureSession {
   constructor(deps: CaptureSessionDeps) {
     this.deps = deps;
     this.audioPath = deps.audioPath;
-    this.webrtcAudioPath = deps.audioPath.replace('.webm', '-webrtc.webm');
+    this.webrtcAudioPath = webrtcAudioPathFor(deps.audioPath);
   }
 
   /** Start ffmpeg recording + arm the periodic (never-overlapping) WebRTC flush. */

@@ -17,7 +17,7 @@ import { waitForMeetingEnd } from './meeting.js';
 import { LeavePolicy } from './leave-policy.js';
 import { isSimilarImage } from './image-similarity.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
-import type { CaptureSession } from './capture-session.js';
+import { type CaptureSession, webrtcAudioPathFor } from './capture-session.js';
 import { transcribe } from './transcribe.js';
 import { launchCamofox, type CamofoxPage } from './camofox.js';
 import { loadSelectors } from './selectors.js';
@@ -457,7 +457,7 @@ async function monitorCamofoxMeeting(
   const screenshotPaths: string[] = [];
   const screenshotDir = path.join(RECORDINGS_DIR, `screenshots-${meetingId}`);
   if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir, { recursive: true });
-  const webrtcAudioPath = audioPath.replace('.webm', '-webrtc.webm');
+  const webrtcAudioPath = webrtcAudioPathFor(audioPath);
   let lastAudioFlush = 0;
 
   while (Date.now() - startTime < maxMs) {

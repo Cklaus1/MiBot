@@ -150,16 +150,8 @@ export async function stopRecording(ffmpeg: ManagedFfmpeg | null): Promise<void>
   }
 }
 
-/** Kill Xvfb and PulseAudio processes started by ensureAudioInfra(). */
-export function cleanupInfra(): void {
-  if (xvfbProc) {
-    try { xvfbProc.kill(); } catch {}
-    xvfbProc = null;
-    console.error('[mibot] Xvfb stopped');
-  }
-  if (pulsePid) {
-    try { process.kill(pulsePid); } catch {}
-    pulsePid = null;
-    console.error('[mibot] PulseAudio stopped');
-  }
-}
+// AU14 (OQ8): cleanupInfra() was deleted here (dead code, zero call sites). Xvfb and PulseAudio
+// are intentionally HOST-PERSISTENT: pulse is started with `--exit-idle-time=-1` and shared by
+// every bot in the process, and the `pgrep` teardown could match an unrelated pulse daemon and
+// kill it. They live for the host's lifetime; a shared session manager (not a per-bot bot.ts
+// finally) is the right owner if teardown is ever needed.
