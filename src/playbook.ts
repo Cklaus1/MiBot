@@ -43,6 +43,40 @@ export interface Playbook {
   steps: PlaybookStep[];
 }
 
+// ── Pure helpers (unit-testable, shared by both engines) ──────────────
+
+/** J21: substitute {{var}} placeholders. Uses `key in vars` (not `vars[key] || ...`) so a
+ *  variable whose value is the empty string substitutes as "" instead of falling through to
+ *  the literal `{{key}}`. A genuinely-absent key keeps its placeholder. */
+export function interpolateVars(str: string, vars: Record<string, string>): string {
+  return str.replace(/\{\{(\w+)\}\}/g, (_, key) => (key in vars ? vars[key] : `{{${key}}}`));
+}
+
+/** J18: fail fast with a clear message when a playbook is structurally invalid, rather than
+ *  letting run() crash on `playbook.steps.length` with an opaque TypeError. */
+export function validatePlaybook(raw: unknown): Playbook {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Invalid playbook: expected a JSON object');
+  }
+  const pb = raw as Record<string, unknown>;
+  if (!Array.isArray(pb.steps)) {
+    throw new Error('Invalid playbook: "steps" must be an array');
+  }
+  pb.steps.forEach((s, i) => {
+    if (!s || typeof s !== 'object' || typeof (s as any).action !== 'string') {
+      throw new Error(`Invalid playbook: step ${i + 1} is missing a string "action"`);
+    }
+  });
+  return raw as Playbook;
+}
+
+let _screenshotSeq = 0;
+/** J24: default screenshot path unique per process AND per call, so concurrent bots (and
+ *  repeated visits to the same step index) never overwrite each other's captures. */
+export function defaultScreenshotPath(num: number): string {
+  return `/tmp/mibot-step-${num}-${process.pid}-${_screenshotSeq++}.png`;
+}
+
 // ── Camofox Playbook Engine ───────────────────────────────────────────
 
 /** Playbook engine for camofox-backed browsers (Google Meet). */
@@ -182,7 +216,7 @@ export class CamofoxPlaybookEngine {
       }
 
       case 'screenshot': {
-        const screenshotPath = step.path || `/tmp/mibot-step-${num}.png`;
+        const screenshotPath = step.path || defaultScreenshotPath(num);
         await this.page.screenshot({ path: screenshotPath });
         console.error(`[playbook] Step ${num}: screenshot → ${screenshotPath}`);
         return;
@@ -256,7 +290,7 @@ export class CamofoxPlaybookEngine {
   }
 
   private interpolate(str: string): string {
-    return str.replace(/\{\{(\w+)\}\}/g, (_, key) => this.vars[key] || `{{${key}}}`);
+    return interpolateVars(str, this.vars);
   }
 
   private describeTarget(step: PlaybookStep): string {
@@ -282,7 +316,9 @@ export class PlaybookEngine {
   /** Load a playbook from a JSON file. */
   static load(filePath: string): Playbook {
     const content = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(content);
+    // J18: validate shape here so a malformed playbook fails with a clear message at load
+    // time, not an opaque TypeError deep inside run().
+    return validatePlaybook(JSON.parse(content));
   }
 
   /** Load a playbook by platform name from the playbooks directory. */
@@ -333,18 +369,22 @@ export class PlaybookEngine {
 
       case 'goto': {
         const url = this.interpolate(step.url || '');
-        await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeout }).catch(() => {
-          console.error(`[playbook] Step ${num}: navigation timeout (continuing anyway)`);
+        await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeout }).catch((err: Error) => {
+          // J7: surface the real navigation error (not every failure is a timeout — DNS,
+          // TLS, and closed-page errors all land here); continuing is intentional (SPAs never
+          // reach networkidle) but the cause must be visible in the logs.
+          console.error(`[playbook] Step ${num}: navigation error (continuing anyway): ${err.message.substring(0, 100)}`);
         });
         console.error(`[playbook] Step ${num}: navigated to ${url.substring(0, 60)}`);
         if (step.wait_for) {
           const waitText = this.interpolate(step.wait_for);
           // J8: poll all frames to the deadline (was a single no-wait probe → 0 actual
           // waiting after navigation, racing every subsequent step against an unloaded page).
+          // J23: getByText takes waitText literally (no `text=` engine mis-parse).
           const match = await pollForFirst(
             this.getFrames('any'),
             async (frame) =>
-              frame.locator(`text=${waitText}`).first().isVisible({ timeout: 1000 }).catch(() => false),
+              frame.getByText(waitText).first().isVisible({ timeout: 1000 }).catch(() => false),
             { deadlineMs: timeout, intervalMs: 250 },
           );
           if (!match) {
@@ -382,7 +422,8 @@ export class PlaybookEngine {
           if (btn) { btn.click(); return 'clicked: ' + btn.textContent?.trim(); }
           return 'not found';
         })()`;
-        const result = await this.page.evaluate(expr);
+        // J19: run in the step's target frame (e.g. Zoom's iframe), not always main.
+        const result = await this.evalFrame(step.frame).evaluate(expr);
         if (result === 'not found') throw new Error(`js_click: ${this.describeTarget(step)} not found`);
         console.error(`[playbook] Step ${num}: js_click ${result}`);
         return;
@@ -413,7 +454,7 @@ export class PlaybookEngine {
         return;
 
       case 'screenshot': {
-        const screenshotPath = step.path || `/tmp/mibot-step-${num}.png`;
+        const screenshotPath = step.path || defaultScreenshotPath(num);
         await this.page.screenshot({ path: screenshotPath });
         console.error(`[playbook] Step ${num}: screenshot → ${screenshotPath}`);
         return;
@@ -421,7 +462,8 @@ export class PlaybookEngine {
 
       case 'eval': {
         const expr = this.interpolate(step.expression || '');
-        const result = await this.page.evaluate(expr);
+        // J19: honor step.frame so eval can target an iframe (e.g. Zoom), not just main.
+        const result = await this.evalFrame(step.frame).evaluate(expr);
         console.error(`[playbook] Step ${num}: eval → ${String(result).substring(0, 100)}`);
         return;
       }
@@ -487,7 +529,9 @@ export class PlaybookEngine {
       return frame.getByRole(step.role as any, opts).first();
     }
     if (step.near_text) {
-      return frame.locator(`text=${step.near_text}`).locator('xpath=following::input[1]');
+      // J23: getByText takes the label literally; the `text=` engine mis-parses labels with a
+      // leading `/` (regex) or embedded quotes.
+      return frame.getByText(step.near_text).first().locator('xpath=following::input[1]');
     }
     if (step.xpath) {
       return frame.locator(`xpath=${step.xpath}`);
@@ -496,12 +540,18 @@ export class PlaybookEngine {
       return frame.locator(step.selector);
     }
     if (step.text) {
-      if (step.exact) {
-        return frame.getByText(step.text, { exact: true }).first();
-      }
-      return frame.locator(`text=${step.text}`).first();
+      // J23: getByText treats step.text as a plain string (substring unless exact), so text
+      // containing `text=` engine-significant chars can't mis-parse into a bad selector.
+      return frame.getByText(step.text, step.exact ? { exact: true } : undefined).first();
     }
     throw new Error('Step has no targeting: need text, role, selector, xpath, or near_text');
+  }
+
+  /** J19: pick the frame js_click/eval should run in. `main`/unset → the page; a URL
+   *  substring → the first matching frame (falls back to the page if none match). */
+  private evalFrame(frameOpt?: string): Page | Frame {
+    if (!frameOpt || frameOpt === 'main') return this.page;
+    return this.getFrames(frameOpt)[0] ?? this.page;
   }
 
   /** Get frames to search based on the frame option. */
@@ -518,7 +568,7 @@ export class PlaybookEngine {
 
   /** Interpolate {{var}} placeholders in a string. */
   private interpolate(str: string): string {
-    return str.replace(/\{\{(\w+)\}\}/g, (_, key) => this.vars[key] || `{{${key}}}`);
+    return interpolateVars(str, this.vars);
   }
 
   /** Describe a step's target for logging. */
