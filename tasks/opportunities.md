@@ -46,9 +46,17 @@
 - [ARCH] control channel — no auth; local-only `0600` socket for now (hardening OQ7 /
   arch AQ4). Becomes mandatory if an `eval`/arbitrary-JS command is ever added (C16 removes
   it from the usage string). Revisit before exposing any code-execution command.
-- [ARCH] AR1 (BrowserBackend unification) — largest structural change; its target bugs
-  (M15, C5) are fixed tactically in waves 2–3, so AR1 is optional-within-scope and
-  scheduled last. If deferred past this run, it lands here as the top item for the next.
+- [ARCH] AR1 (BrowserBackend unification) — **DEFERRED past this run** (final Wave 6
+  decision, per AQ1). Largest structural change (L, blast radius = all join flows). Its
+  target divergence bugs (M15, C5) are already fixed tactically, and Wave 5 hardened both
+  engines' join/interaction/teardown edges independently (J*, C14/C15, R13). AR1 would
+  fold the two monitor loops (`waitForMeetingEnd` in meeting.ts + `monitorCamofoxMeeting`
+  in bot.ts) behind one `BrowserBackend` interface (`join`/`pollParticipants`/`drainSignals`/
+  `screenshot`/`flushAudio`/`close`) and shrink bot.ts from ~770 → ~184 lines. **Top item
+  for the next run.** When it lands, do AQ5 in the same PR (CLAUDE.md line count → ~184).
+  The Wave 5 pure seams (buildSelectorClickExpr/buildTypeSetExpr/buildPressExpr,
+  findRefInSnapshot, parseCamofoxResponse, closeOrKill, isNavTimeout) are the natural
+  method bodies of the Camofox backend impl — AR1 is now a re-wiring, not a rewrite.
 - [ARCH] N1 transcription-provider interface, N2 platform-plugin registry, N3 signal event
   bus, N4 DI framework, N5 DB repository/ORM — explicitly rejected as YAGNI
   (architecture-spec NEGATIVES). Listed so they are not "re-discovered" as new ideas.

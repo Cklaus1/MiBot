@@ -69,3 +69,33 @@
 ### Async lifecycle: a "stop" that doesn't await is a race, not a stop
 - **Mistake (AU4):** `stopRecording` sent SIGINT then immediately nulled the handle; the subsequent `copyFileSync` raced ffmpeg still writing the webm trailer, and an ffmpeg ignoring SIGINT leaked forever.
 - **Rule:** A stop must await the real exit (SIGINT → timeout → SIGKILL) before callers touch the output. Wrap child processes so 'error'/'exit' are always handled — an unhandled 'error' on a child EventEmitter crashes the process (AU6), and a missing 'exit' handler reports a mid-meeting death as success (AU5).
+
+## 2026-07-29 — Build-loop Wave 5 (join/control/CLI/teardown edges)
+
+### Browser code IS testable — extract the seam, not an excuse
+- **Mistake pattern (J-cluster):** "vitest can't drive a real browser" was treated as "these paths can't be tested," so camofox click/type/press/findRef shipped unverified — and each had a silent-failure bug (typed text dropped, `Join` matching `Rejoin`, selectors fed to a snapshot text search that never matches).
+- **Rule:** For browser/page code, extract a pure seam: a **JS-expression builder** (`buildTypeSetExpr`/`buildPressExpr`/`buildSelectorClickExpr`) that returns a source string testable via `new Function(...)` with a fake `document`, a **pure matcher** (`findRefInSnapshot`) over the snapshot text, or an **injected-clock poller** (`pollForFirst`, `closeOrKill`). The seam is also the exact method body the future backend impl (AR1) needs — testing it now is free structure later.
+
+### "Logged success" must be gated on a verified effect
+- **Mistake (J6/J17):** the camofox `type`/`press` evals wrote only when `activeElement` was editable but the step ALWAYS logged "typed"/"pressed". A mis-targeted type silently dropped the text — the worst kind of failure, one that looks like success.
+- **Rule:** An action expr must RETURN whether it actually did the thing (wrote to an editable el / had a focus target), and the caller must throw on false. Never log an outcome you didn't confirm.
+
+### One signal handler for the whole process, registered once, exits once
+- **Mistake (C1):** each ControlChannel registered its own SIGINT/SIGTERM handler that called `stop()` but never exited — so once any channel started, Ctrl+C did nothing (browser/ffmpeg kept running), and every meeting leaked two more listeners.
+- **Rule:** Signal handling lives in exactly ONE place (`shutdown.ts`), installed once (`process.once`). Subsystems register named teardown hooks; the single path runs them LIFO (children stop before log/db flush), swallows per-hook errors, then exits. Per-meeting hooks return a disposer and dispose on normal completion, or hooks (and their captured browser handles) pile up — the same leak, relocated.
+
+### A `Promise.race([work, timer])` leaks the timer and abandons the loser
+- **Mistake (C14):** `Promise.race([browser.close(), 5s])` nulled the handle on a lost race and never retried → hung Chromium leaked (camera/mic held); the un-cancelled timer kept a finished `mibot join` alive 5s.
+- **Rule:** A timed close must (a) `clearTimeout` in `finally` so the timer never outlives the call, and (b) force-kill (`process().kill('SIGKILL')`) the loser, not just drop it. `closeOrKill` encodes both.
+
+### `.catch(() => continue)` on I/O hides the failures you most need to see
+- **Mistake (C15/J7):** `page.goto(...).catch(log)` swallowed DNS/refused/bad-URL alongside the benign networkidle timeout, then ran the whole playbook against about:blank → misleading "step not found" minutes later.
+- **Rule:** Classify before you swallow. Continue only past the one benign case (`isNavTimeout`); rethrow the rest. A blanket catch on navigation/IO turns a clear root-cause error into a distant symptom.
+
+### Cast a JSON blob to an array only through a guard
+- **Mistake (C11):** unguarded `JSON.parse(meeting.attendees)` inside the poll's sort threw on one malformed row and aborted the ENTIRE poll iteration — the watcher joined nothing that cycle, and every cycle the bad row stayed in-window.
+- **Rule:** External/stored JSON crosses a `safeParseArray` boundary (try/catch + `Array.isArray`) before use. A per-item parse failure must degrade that item, never abort the batch loop.
+
+### Cross-suite file races hide until suites interleave
+- **Mistake:** two test suites wrote the same `~/.config/mibot/selectors/zoom.json`; each passed alone, but parallel workers clobbered each other → a flaky failure that only appeared in the full run.
+- **Rule:** File-touching tests must own a unique path (distinct platform/fixture per suite). Prove stability by running the FULL suite (not just the new file) 2–3× before committing — an isolated green is not a green.

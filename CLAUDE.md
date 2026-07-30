@@ -57,7 +57,9 @@
 
 ## Architecture
 
-- `bot.ts` — thin orchestrator (~184 lines), imports from all modules
+- `bot.ts` — orchestrator + the two per-backend monitor loops (~770 lines). The "~184
+  lines" target is only reached once AR1 unifies the two engines behind `BrowserBackend`;
+  AR1 is deferred (see tasks/opportunities.md), so both loops still live here.
 - `meeting.ts` — participant tracking, leave logic, speaker detection
 - `audio.ts` — WebRTC + ffmpeg recording
 - `transcribe.ts` — audioscript integration + auto speaker labeling
@@ -65,6 +67,8 @@
 - `signals.ts` — chat, reactions, hand raises, screen share screenshots
 - `control.ts` — Unix socket for live debugging (`mibot send <id> screenshot`)
 - `webrtc-capture.ts` — RTCPeerConnection hook for audio capture
+- `shutdown.ts` — single LIFO graceful-teardown path (signal handlers, log/db/child hooks)
+- `cli.ts` / `bot-teardown.ts` — pure CLI-arg and teardown/nav helpers (testable seams)
 
 ## Known Constraints
 

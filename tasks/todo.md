@@ -154,8 +154,8 @@
 - [x] C20 P3 — poll re-entrancy guard · blockedBy: — — `polling` flag skips a tick while the previous async poll is still in flight; released in finally
 
 ## Wave 6 — Structural unification (LAST, optional-in-scope)
-- [ ] AR1 — BrowserBackend contract + unified join/monitor/finalize pipeline (subsumes AD1/AD2/AD3/AD5/AD8/AD9) · blockedBy: F5, R2, F1
-- [ ] AQ5 — update CLAUDE.md bot.ts line count + module description · blockedBy: AR1
+- [BLOCKED/DEFERRED] AR1 — BrowserBackend contract + unified join/monitor/finalize pipeline · blockedBy: F5, R2, F1 — DEFERRED per AQ1 (final decision): target divergence bugs M15/C5 fixed tactically; both engines hardened independently in Wave 5. Logged as top item for next run in opportunities.md. Not a poison task — a scoped-out L refactor.
+- [x] AQ5 — update CLAUDE.md bot.ts line count + module description · blockedBy: AR1 — corrected stale "~184 lines" to actual ~770 + AR1-deferral note; documented shutdown.ts/cli.ts/bot-teardown.ts (AQ5's "verify docs against reality at tier boundary" applied without waiting on deferred AR1)
 
 ## Tier gates (run at each wave boundary — build-loop.md §8)
 - [ ] Full-suite regression after each wave (`npx vitest run` + tsup + tsc)
