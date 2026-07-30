@@ -99,3 +99,11 @@
 ### Cross-suite file races hide until suites interleave
 - **Mistake:** two test suites wrote the same `~/.config/mibot/selectors/zoom.json`; each passed alone, but parallel workers clobbered each other → a flaky failure that only appeared in the full run.
 - **Rule:** File-touching tests must own a unique path (distinct platform/fixture per suite). Prove stability by running the FULL suite (not just the new file) 2–3× before committing — an isolated green is not a green.
+
+### A pure ID audit at the tier boundary catches silent drops that per-wave green hides
+- **Mistake (J3):** J3 — a P1 (stale-tab sweep deletes a live second bot's meet tab) — was never mirrored into the build DAG. Every wave ran green and the compound stop condition looked met, because a dropped task leaves no failing test to notice it; its absence is invisible until something cross-checks specs against the mirror.
+- **Rule:** Before declaring the stop condition met, run a mechanical spec-ID → todo-ID diff (a fresh subagent, not the builder who owns the blind spot). An actionable finding with no `[x]`/`[ ]`/`[BLOCKED]` line and no `→Rn` parent is a silent drop — pull it back into the DAG and fix it test-first, don't wave it through. "All boxes checked" only proves the boxes that exist.
+
+### Concurrency-safe cleanup must distinguish a crashed peer from a live one
+- **Mistake (J3):** the sweep reclaimed *every* `meet.google.com` tab under the shared USER_ID — correct for a crashed prior run, catastrophic for a concurrent bot (it deleted the live meeting tab mid-call).
+- **Rule:** Shared-resource reclamation keys off *liveness*, not identity-of-kind. Tag each resource with its owner pid on creation; before reclaiming, probe `kill(pid, 0)` (ESRCH=dead→reclaim, EPERM=alive→keep). Unowned = crashed run = reclaimable. Encode the decision as a pure seam (`selectStaleTabs`) so both the crash and concurrent cases are unit-tested without real processes.

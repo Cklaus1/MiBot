@@ -153,10 +153,13 @@
 - [x] C18 P3 — --title flag parsing · blockedBy: — — parseJoinArgs strips --title wherever it sits, takes first non-flag token as URL; last-token --title → undefined title
 - [x] C20 P3 — poll re-entrancy guard · blockedBy: — — `polling` flag skips a tick while the previous async poll is still in flight; released in finally
 
+## Wave 5.8 — J3 concurrency-safe stale-tab reclaim (audit-caught drop)
+- [x] J3 P1 — stale-tab sweep deletes a live second bot's meet tab · blockedBy: — — camofox sweep used a bare `url.includes('meet.google.com')` under the shared USER_ID, so `mibot join` alongside `mibot start` navigated-away + deleted the running bot's meeting tab. Fix: on-disk tabId→owner-pid registry (registerTab on createTab, unregisterTab on close) + selectStaleTabs pure seam that reclaims a meet tab ONLY when unowned (crashed run) or its owner pid is dead (isPidAlive via `kill(pid,0)`); a live owner's tab is spared. camofox-stale-tabs.test.ts (11 cases). Caught by the Wave-6 spec-vs-todo audit (was a genuine silent drop — standalone P1, no `→Rn` coverage).
+
 ## Wave 6 — Structural unification (LAST, optional-in-scope)
 - [BLOCKED/DEFERRED] AR1 — BrowserBackend contract + unified join/monitor/finalize pipeline · blockedBy: F5, R2, F1 — DEFERRED per AQ1 (final decision): target divergence bugs M15/C5 fixed tactically; both engines hardened independently in Wave 5. Logged as top item for next run in opportunities.md. Not a poison task — a scoped-out L refactor.
 - [x] AQ5 — update CLAUDE.md bot.ts line count + module description · blockedBy: AR1 — corrected stale "~184 lines" to actual ~770 + AR1-deferral note; documented shutdown.ts/cli.ts/bot-teardown.ts (AQ5's "verify docs against reality at tier boundary" applied without waiting on deferred AR1)
 
 ## Tier gates (run at each wave boundary — build-loop.md §8)
-- [x] Full-suite regression after each wave (`npx vitest run` + tsup + tsc) — green at every Wave 5.x/6 boundary; final: 321 tests, tsc clean, tsup OK
+- [x] Full-suite regression after each wave (`npx vitest run` + tsup + tsc) — green at every Wave 5.x/6 boundary; final: 332 tests (55 files), tsc clean, tsup OK
 - [x] Smoke/integration after each wave (config/meetings/recordings boot, control cmd, playbook parse, AU1 iframe fixture) — boot smoke clean at each boundary; playbook parse + control seams now unit-covered (control-edges, playbook-hardening)

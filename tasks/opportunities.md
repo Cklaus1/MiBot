@@ -18,6 +18,14 @@
   (AU13) for any out-of-tree caller; no in-repo call sites remain. Remove in a future cleanup · opt.
 
 ## Candidate bugs found during build (triage into a future DAG)
+- [RESOLVED] J3 stale-tab reclaim — a Wave-6 spec-vs-todo audit found J3 (P1) had been
+  silently dropped from the build DAG (standalone P1, no `→Rn` parent to cover it). Fixed in
+  Wave 5.8 (per-tab owner-pid registry + `selectStaleTabs` liveness seam; camofox-stale-tabs.test.ts).
+- [BOOKKEEPING] The same audit flagged R5/D2/AU9/CA7 as IDs absent from the todo mirror, but
+  each is substantively covered by a parent task (R5→AR1-deferred; D2→F3; AU9→R2; CA7→F4/R7) —
+  landed, just not written as their own line. AD1/2/3/5/7/8/9 fold into deferred AR1 or landed
+  seams; AQ4 (control auth) is do-not-build-this-pass. No further code action; noted so a future
+  audit doesn't re-flag them as drops.
 - [RESOLVED] test isolation — shared on-disk `~/.config/mibot/mibot.db` caused an
   intermittent "1 failed" under full-suite concurrency. Fixed mid-build (commit ad4808a):
   getDb() honors `MIBOT_DB_PATH`, test/setup.ts gives each test file a temp DB. 5× clean.

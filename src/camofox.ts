@@ -1,10 +1,82 @@
 import type { Page, Frame, Locator } from 'playwright';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { pollForFirst, type PollOptions } from './poll.js';
 
 const CAMOFOX_URL = process.env.CAMOFOX_URL || 'http://localhost:9377';
 const USER_ID = 'mibot';
 const SESSION_KEY = 'meet';
 const CAMOFOX_FETCH_TIMEOUT_MS = 15000;
+
+/** J3 tab-ownership registry. Camofox shares one USER_ID across every bot in this
+ *  install, so the on-disk tabId→owner-pid map is what lets the stale-tab sweep tell a
+ *  *crashed* prior run's tab (safe to reclaim) from a *live* concurrent bot's meeting tab
+ *  (must never be touched). Kept out of ~/.config/mibot so a test can point it elsewhere. */
+export const TAB_REGISTRY_DIR =
+  process.env.MIBOT_TAB_REGISTRY_DIR || path.join(os.tmpdir(), 'mibot-tabs');
+
+/** Element the sweep reasons over: just the fields the camofox `/tabs` list returns. */
+export interface TabInfo {
+  tabId: string;
+  url: string;
+}
+
+/** Record that `pid` owns `tabId`. Best-effort: a failed write just means the tab looks
+ *  unowned to a later sweep (reclaimable), which is the safe default for our own tab. */
+export function registerTab(tabId: string, pid: number, dir = TAB_REGISTRY_DIR): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, tabId), String(pid));
+  } catch { /* best-effort */ }
+}
+
+/** Drop a tab's ownership record on clean close so it doesn't linger as a dead entry. */
+export function unregisterTab(tabId: string, dir = TAB_REGISTRY_DIR): void {
+  try {
+    fs.unlinkSync(path.join(dir, tabId));
+  } catch { /* already gone — fine */ }
+}
+
+/** Read the owner pid for a tab, or undefined if unregistered/corrupt/unreadable. */
+export function readTabOwner(tabId: string, dir = TAB_REGISTRY_DIR): number | undefined {
+  try {
+    const raw = fs.readFileSync(path.join(dir, tabId), 'utf8').trim();
+    const pid = Number(raw);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True if a process with `pid` currently exists. `kill(pid, 0)` sends no signal; it only
+ *  probes: it throws ESRCH when the pid is gone, EPERM when it exists but we can't signal it
+ *  (still alive → keep the tab). */
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** J3: decide which tabs the sweep may reclaim. A tab is stale ONLY if it is a meet tab
+ *  AND (it has no registered owner — a crashed prior run — OR its owner pid is dead). A
+ *  meet tab owned by a live process is a concurrent bot's meeting and is left untouched.
+ *  Pure over its two injected probes so it is unit-testable without a registry or real pids. */
+export function selectStaleTabs(
+  tabs: TabInfo[],
+  ownerOf: (tabId: string) => number | undefined = (id) => readTabOwner(id),
+  alive: (pid: number) => boolean = isPidAlive,
+): TabInfo[] {
+  return tabs.filter((tab) => {
+    if (!tab.url.includes('meet.google.com')) return false;
+    const owner = ownerOf(tab.tabId);
+    if (owner === undefined) return true; // unowned → crashed prior run
+    return !alive(owner); // owned but dead → stale entry
+  });
+}
 
 interface CamofoxTab {
   tabId: string;
@@ -146,6 +218,7 @@ export class CamofoxPage {
     }) as CamofoxTab;
     if (!data.tabId) throw new CamofoxApiError('Camofox /tabs returned no tabId', '/tabs', 200, JSON.stringify(data).slice(0, 300));
     this.tabId = data.tabId;
+    registerTab(this.tabId, process.pid); // J3: claim ownership so a peer's sweep spares this tab
     console.error(`[mibot] Camofox tab: ${this.tabId}`);
   }
 
@@ -222,6 +295,7 @@ export class CamofoxPage {
     try {
       await fetch(`${CAMOFOX_URL}/tabs/${this.tabId}?userId=${USER_ID}`, { method: 'DELETE' });
     } catch {}
+    unregisterTab(this.tabId); // J3: drop our ownership record so we don't leave a dead entry
     this.tabId = null;
   }
 
@@ -373,21 +447,22 @@ export async function launchCamofox(url: string): Promise<CamofoxPage> {
     throw new Error(`Camofox not running at ${CAMOFOX_URL}. Start it with: cd /root/projects/camofox-browser && npm start`);
   }
 
-  // Clean up any stale MiBot tabs from previous runs
+  // J3: reclaim ONLY stale meet tabs — a crashed prior run's, or one whose owner pid is
+  // dead. A meet tab owned by a live process is a concurrent bot's meeting; deleting it
+  // would drop that bot mid-call, so selectStaleTabs leaves it alone.
   try {
-    const tabsData = await camofoxFetch('/tabs', `${CAMOFOX_URL}/tabs?userId=${USER_ID}`) as { tabs: Array<{ tabId: string; url: string }> };
-    for (const tab of tabsData.tabs || []) {
-      if (tab.url.includes('meet.google.com')) {
-        // Navigate away to leave the meeting, then delete
-        await fetch(`${CAMOFOX_URL}/tabs/${tab.tabId}/navigate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: USER_ID, url: 'https://google.com' }),
-        }).catch(() => {});
-        await new Promise(r => setTimeout(r, 2000));
-        await fetch(`${CAMOFOX_URL}/tabs/${tab.tabId}?userId=${USER_ID}`, { method: 'DELETE' }).catch(() => {});
-        console.error(`[mibot] Cleaned up stale camofox tab: ${tab.tabId.substring(0, 12)}`);
-      }
+    const tabsData = await camofoxFetch('/tabs', `${CAMOFOX_URL}/tabs?userId=${USER_ID}`) as { tabs: TabInfo[] };
+    for (const tab of selectStaleTabs(tabsData.tabs || [])) {
+      // Navigate away to leave the meeting, then delete
+      await fetch(`${CAMOFOX_URL}/tabs/${tab.tabId}/navigate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: USER_ID, url: 'https://google.com' }),
+      }).catch(() => {});
+      await new Promise(r => setTimeout(r, 2000));
+      await fetch(`${CAMOFOX_URL}/tabs/${tab.tabId}?userId=${USER_ID}`, { method: 'DELETE' }).catch(() => {});
+      unregisterTab(tab.tabId); // clear any dead ownership record we just reclaimed
+      console.error(`[mibot] Cleaned up stale camofox tab: ${tab.tabId.substring(0, 12)}`);
     }
   } catch {}
 
