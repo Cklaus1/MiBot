@@ -146,8 +146,8 @@
 - [x] C11 P2 — JSON.parse(attendees) aborts poll · blockedBy: — — safeParseArray in prioritizeMeetings + queue-full log; one malformed blob no longer aborts the poll iteration
 - [x] C12 P3 — wrap updateHeartbeat (was false-pos) · blockedBy: — — both updateHeartbeat sites (interval + camofox monitor loop) try/catch+log; SQLite hiccup can't crash bot or skip final audio promotion
 - [x] C13 P3 — log flush before exit · blockedBy: R13 — log.close() registered as a shutdown hook (unwinds last, LIFO) so the JSONL stream flushes before exit
-- [ ] C14 P1 — hung Chromium leak on close race · blockedBy: R3
-- [ ] C15 P3 — goto swallows nav (sibling J7) · blockedBy: —
+- [x] C14 P1 — hung Chromium leak on close race · blockedBy: R3 — closeOrKill SIGKILLs a wedged Chromium after the deadline and always clears its timer (no 5s linger); all 3 close sites routed through it
+- [x] C15 P3 — goto swallows nav (sibling J7) · blockedBy: — — isNavTimeout: continue only past a networkidle timeout; rethrow real nav failures (DNS/refused/bad URL) instead of running the playbook against about:blank
 - [x] C16 P3 — remove eval from usage (OQ8) · blockedBy: — — dropped `eval <js>` from the CLI usage string (handleCommand has no eval case; OQ8 keeps it unimplemented)
 - [x] C17 P3 — log level validate + date rotate · blockedBy: — — resolveLogLevel falls back to info on invalid MIBOT_LOG_LEVEL; getStream recomputes logFileName each write and rotates at midnight
 - [x] C18 P3 — --title flag parsing · blockedBy: — — parseJoinArgs strips --title wherever it sits, takes first non-flag token as URL; last-token --title → undefined title

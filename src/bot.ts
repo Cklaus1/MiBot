@@ -22,6 +22,7 @@ import { transcribe } from './transcribe.js';
 import { launchCamofox, type CamofoxPage } from './camofox.js';
 import { loadSelectors } from './selectors.js';
 import { registerShutdownHook } from './shutdown.js';
+import { isNavTimeout, closeOrKill } from './bot-teardown.js';
 import { log } from './log.js';
 
 const RECORDINGS_DIR = path.join(os.homedir(), '.config', 'mibot', 'recordings');
@@ -92,14 +93,29 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
   let camofoxPage: CamofoxPage | null = null;
   let captureSession: CaptureSession | null = null;
 
+  // C14: close the browser, force-killing a wedged Chromium (holding camera/mic) if it
+  // doesn't shut down in time. closeOrKill also clears its own timer so a finished
+  // `mibot join` doesn't linger. camofoxPage has no local process handle → no-op killer.
+  const closeBrowser = () => browser
+    ? closeOrKill(() => browser!.close(), () => {
+        // Browser doesn't expose its child process in the public type, but the handle
+        // exists at runtime — reach for it to SIGKILL a Chromium that ignored close().
+        (browser as unknown as { process?: () => { kill: (s: string) => void } | null })
+          .process?.()?.kill('SIGKILL');
+      })
+    : Promise.resolve();
+  const closeCamofox = () => camofoxPage
+    ? closeOrKill(() => camofoxPage!.close(), () => {})
+    : Promise.resolve();
+
   // C1: on SIGINT/SIGTERM the graceful-shutdown path must stop THIS bot's children
   // (ffmpeg + browser) — the finally below only runs on normal completion, not on a
   // signal. Register a teardown hook and dispose it in finally so hooks don't pile up.
   const disposeTeardownHook = registerShutdownHook(`bot-${meeting.id}`, async () => {
     if (captureSession) await stopAudioCapture(captureSession).catch(() => {});
     if (controlChannel) controlChannel.stop();
-    if (browser) await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
-    if (camofoxPage) await Promise.race([camofoxPage.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+    await closeBrowser();
+    await closeCamofox();
   });
 
   // D3/R1: one heartbeat interval spans the ENTIRE active lifecycle — joining (waiting
@@ -180,6 +196,10 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       await installAudioCapture(page.context());
 
       await page.goto(opts.url, { waitUntil: 'networkidle', timeout: 30000 }).catch((err: Error) => {
+        // C15: only continue past a networkidle timeout (page usually loaded enough to join).
+        // A real nav failure (DNS/refused/bad URL) must abort — otherwise the playbook runs
+        // against about:blank and fails minutes later with a misleading "step not found".
+        if (!isNavTimeout(err)) throw err;
         console.error(`[mibot] Navigation timeout (continuing): ${err.message.substring(0, 80)}`);
       });
 
@@ -258,7 +278,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
 
       if (controlChannel) controlChannel.stop();
       controlChannel = null;
-      await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+      await closeBrowser();
       browser = null;
 
       if (haveAudio) {
@@ -286,8 +306,8 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     // stop it here so ffmpeg is finalized and killed. No-op after a clean stop.
     if (captureSession) await stopAudioCapture(captureSession).catch(() => {});
     if (controlChannel) controlChannel.stop();
-    if (browser) await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
-    if (camofoxPage) await Promise.race([camofoxPage.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+    await closeBrowser();
+    await closeCamofox();
   }
 }
 
