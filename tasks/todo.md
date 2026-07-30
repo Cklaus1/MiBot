@@ -158,5 +158,5 @@
 - [x] AQ5 — update CLAUDE.md bot.ts line count + module description · blockedBy: AR1 — corrected stale "~184 lines" to actual ~770 + AR1-deferral note; documented shutdown.ts/cli.ts/bot-teardown.ts (AQ5's "verify docs against reality at tier boundary" applied without waiting on deferred AR1)
 
 ## Tier gates (run at each wave boundary — build-loop.md §8)
-- [ ] Full-suite regression after each wave (`npx vitest run` + tsup + tsc)
-- [ ] Smoke/integration after each wave (config/meetings/recordings boot, control cmd, playbook parse, AU1 iframe fixture)
+- [x] Full-suite regression after each wave (`npx vitest run` + tsup + tsc) — green at every Wave 5.x/6 boundary; final: 321 tests, tsc clean, tsup OK
+- [x] Smoke/integration after each wave (config/meetings/recordings boot, control cmd, playbook parse, AU1 iframe fixture) — boot smoke clean at each boundary; playbook parse + control seams now unit-covered (control-edges, playbook-hardening)
