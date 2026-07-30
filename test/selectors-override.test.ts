@@ -35,9 +35,11 @@ describe('sanitizeSelectorList (J22 element-type validation)', () => {
   });
 });
 
+// Uses teams.json (not zoom.json) so it can't race the file-override cases in
+// selectors.test.ts, which run in a separate worker against the same config dir.
 describe('loadSelectors override (J22 rejects non-string elements)', () => {
   const SELECTORS_DIR = path.join(os.homedir(), '.config', 'mibot', 'selectors');
-  const overridePath = path.join(SELECTORS_DIR, 'zoom.json');
+  const overridePath = path.join(SELECTORS_DIR, 'teams.json');
   let existed = false;
   let backup: string | null = null;
 
@@ -57,9 +59,9 @@ describe('loadSelectors override (J22 rejects non-string elements)', () => {
   it('keeps defaults when an override list has non-string elements', () => {
     fs.writeFileSync(overridePath, JSON.stringify({ participantNames: [123, null] }));
     reloadSelectors();
-    const sel = loadSelectors('zoom');
+    const sel = loadSelectors('teams');
     // The malformed key is rejected wholesale; the default list survives.
-    expect(sel.participantNames).toEqual(DEFAULT_SELECTORS.zoom.participantNames);
+    expect(sel.participantNames).toEqual(DEFAULT_SELECTORS.teams.participantNames);
   });
 
   it('still applies a valid sibling key when the other key is malformed', () => {
@@ -68,8 +70,8 @@ describe('loadSelectors override (J22 rejects non-string elements)', () => {
       activeSpeaker: ['.valid-speaker'],
     }));
     reloadSelectors();
-    const sel = loadSelectors('zoom');
-    expect(sel.participantNames).toEqual(DEFAULT_SELECTORS.zoom.participantNames);
+    const sel = loadSelectors('teams');
+    expect(sel.participantNames).toEqual(DEFAULT_SELECTORS.teams.participantNames);
     expect(sel.activeSpeaker).toEqual(['.valid-speaker']);
   });
 });

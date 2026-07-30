@@ -3,8 +3,72 @@ import net from 'net';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { registerShutdownHook } from './shutdown.js';
 
 const SOCKET_DIR = path.join(os.homedir(), '.config', 'mibot', 'sockets');
+const CONTROL_TIMEOUT_MS = 30000;
+
+/**
+ * Parse a control-channel response (C9). The server serializes both success and
+ * failure on the same normal stream as `{ok:true,result}` / `{ok:false,error}`,
+ * so the CLI must inspect `ok` — treating any bytes as success made a failed
+ * command print raw JSON and exit 0. ok:false throws the server error; malformed
+ * JSON throws too.
+ */
+export function parseControlResponse(raw: string): unknown {
+  const parsed = JSON.parse(raw.trim()) as { ok?: boolean; result?: unknown; error?: unknown };
+  if (parsed && parsed.ok === false) {
+    throw new Error(typeof parsed.error === 'string' ? parsed.error : 'control command failed');
+  }
+  return parsed.result;
+}
+
+/**
+ * Probe whether a Unix socket has a live listener (C8). A stale `.sock` left by a
+ * crashed bot refuses the connection (ECONNREFUSED); a running bot accepts it.
+ * mtime is not liveness — an old-but-alive bot's socket looks "stale" by age.
+ */
+export function isSocketAlive(
+  sockPath: string,
+  connect: (p: string) => NodeJS.EventEmitter & { destroy: () => void } = (p) => net.createConnection(p) as any,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (alive: boolean) => { if (!settled) { settled = true; resolve(alive); } };
+    const sock = connect(sockPath);
+    sock.on('connect', () => { sock.destroy(); done(true); });
+    sock.on('error', () => { sock.destroy(); done(false); });
+  });
+}
+
+interface SweepDeps {
+  readdir: (dir: string) => string[];
+  isAlive: (sockPath: string) => Promise<boolean>;
+  unlink: (sockPath: string) => void;
+}
+
+/**
+ * Remove only DEAD bot sockets (C8), leaving live bots' sockets and the caller's
+ * own socket untouched. Best effort: a readdir/unlink failure is swallowed so a
+ * housekeeping hiccup never blocks startup.
+ */
+export async function sweepStaleSockets(dir: string, ownSock: string, deps: SweepDeps): Promise<void> {
+  let files: string[];
+  try {
+    files = deps.readdir(dir);
+  } catch {
+    return; // dir missing / unreadable — nothing to sweep
+  }
+  for (const file of files) {
+    if (!file.endsWith('.sock') || file === ownSock) continue;
+    const sockPath = path.join(dir, file);
+    try {
+      if (!(await deps.isAlive(sockPath))) deps.unlink(sockPath);
+    } catch {
+      // leave it — better a stale socket than a thrown sweep
+    }
+  }
+}
 
 /**
  * Live control channel for a running bot.
@@ -22,6 +86,8 @@ export class ControlChannel {
   private server: net.Server | null = null;
   private page: Page;
   private socketPath: string;
+  private ownSockName: string;
+  private disposeHook: (() => void) | null = null;
 
   constructor(page: Page, meetingId: number) {
     this.page = page;
@@ -29,21 +95,15 @@ export class ControlChannel {
       fs.mkdirSync(SOCKET_DIR, { recursive: true, mode: 0o700 });
     }
     this.socketPath = path.join(SOCKET_DIR, `bot-${meetingId}.sock`);
+    this.ownSockName = `bot-${meetingId}.sock`;
 
-    // Clean up stale sockets — if socket file is older than the current process, it's stale
-    try {
-      const processStart = Date.now() - (process.uptime() * 1000);
-      for (const file of fs.readdirSync(SOCKET_DIR)) {
-        if (!file.endsWith('.sock')) continue;
-        const sockPath = path.join(SOCKET_DIR, file);
-        try {
-          const stat = fs.statSync(sockPath);
-          if (stat.mtimeMs < processStart) {
-            fs.unlinkSync(sockPath);
-          }
-        } catch {}
-      }
-    } catch {}
+    // Sweep dead sockets by liveness probe, not mtime (C8): an old-but-running
+    // bot's socket is alive, and must not be unlinked out from under it.
+    void sweepStaleSockets(SOCKET_DIR, this.ownSockName, {
+      readdir: (dir) => fs.readdirSync(dir),
+      isAlive: (p) => isSocketAlive(p),
+      unlink: (p) => fs.unlinkSync(p),
+    });
   }
 
   /** Start listening for commands. */
@@ -55,35 +115,47 @@ export class ControlChannel {
 
     this.server = net.createServer((conn) => {
       let data = '';
+      // C2: a client that disconnects mid-response emits EPIPE on the socket; without
+      // this handler it surfaces as an uncaught exception and crashes the bot mid-meeting.
+      conn.on('error', () => { /* client vanished — nothing to do */ });
       conn.on('data', (chunk) => { data += chunk.toString(); });
       conn.on('end', async () => {
+        let payload: string;
         try {
           const result = await this.handleCommand(data.trim());
-          conn.write(JSON.stringify({ ok: true, result }) + '\n');
+          payload = JSON.stringify({ ok: true, result }) + '\n';
         } catch (err) {
-          conn.write(JSON.stringify({ ok: false, error: (err as Error).message }) + '\n');
+          payload = JSON.stringify({ ok: false, error: (err as Error).message }) + '\n';
         }
+        // Guard the write: the peer may already be gone (C2).
+        if (!conn.destroyed) { try { conn.write(payload); } catch { /* peer gone */ } }
         conn.end();
       });
+    });
+
+    // C2: EADDRINUSE / permission errors on listen() must not be an uncaught crash.
+    this.server.on('error', (err) => {
+      console.error(`[mibot] Control channel error: ${err.message}`);
     });
 
     this.server.listen(this.socketPath);
     console.error(`[mibot] Control channel: ${this.socketPath}`);
 
-    // Register signal handlers to clean up socket on exit
-    const cleanup = () => { this.stop(); };
-    process.on('SIGTERM', cleanup);
-    process.on('SIGINT', cleanup);
+    // Socket teardown is owned by the single graceful-shutdown path (C1), not by
+    // per-ControlChannel SIGINT/SIGTERM handlers (which never exited and leaked
+    // listeners). The hook is disposed in stop() so it doesn't accumulate per meeting.
+    this.disposeHook = registerShutdownHook(`control-${this.ownSockName}`, () => this.stop());
   }
 
   /** Stop listening. */
   stop(): void {
+    if (this.disposeHook) { this.disposeHook(); this.disposeHook = null; }
     if (this.server) {
       this.server.close();
       this.server = null;
     }
     if (fs.existsSync(this.socketPath)) {
-      fs.unlinkSync(this.socketPath);
+      try { fs.unlinkSync(this.socketPath); } catch { /* already gone */ }
     }
   }
 
@@ -189,6 +261,12 @@ export function sendCommand(meetingId: number, command: string): Promise<string>
     });
 
     let data = '';
+    // C10: a wedged page would leave the server response pending forever, hanging
+    // `mibot send` with no way out. Bound the wait and fail loudly instead.
+    client.setTimeout(CONTROL_TIMEOUT_MS, () => {
+      client.destroy();
+      reject(new Error(`Control command timed out after ${CONTROL_TIMEOUT_MS}ms (bot may be wedged)`));
+    });
     client.on('data', (chunk) => { data += chunk.toString(); });
     client.on('end', () => resolve(data));
     client.on('error', (err) => reject(err));

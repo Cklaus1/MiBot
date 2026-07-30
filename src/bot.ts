@@ -21,6 +21,7 @@ import { type CaptureSession, webrtcAudioPathFor } from './capture-session.js';
 import { transcribe } from './transcribe.js';
 import { launchCamofox, type CamofoxPage } from './camofox.js';
 import { loadSelectors } from './selectors.js';
+import { registerShutdownHook } from './shutdown.js';
 import { log } from './log.js';
 
 const RECORDINGS_DIR = path.join(os.homedir(), '.config', 'mibot', 'recordings');
@@ -90,6 +91,16 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
   let browser: PWBrowser | null = null;
   let camofoxPage: CamofoxPage | null = null;
   let captureSession: CaptureSession | null = null;
+
+  // C1: on SIGINT/SIGTERM the graceful-shutdown path must stop THIS bot's children
+  // (ffmpeg + browser) — the finally below only runs on normal completion, not on a
+  // signal. Register a teardown hook and dispose it in finally so hooks don't pile up.
+  const disposeTeardownHook = registerShutdownHook(`bot-${meeting.id}`, async () => {
+    if (captureSession) await stopAudioCapture(captureSession).catch(() => {});
+    if (controlChannel) controlChannel.stop();
+    if (browser) await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+    if (camofoxPage) await Promise.race([camofoxPage.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+  });
 
   // D3/R1: one heartbeat interval spans the ENTIRE active lifecycle — joining (waiting
   // room), in_call, and the up-to-30-min processing/transcription phase. Previously it was
@@ -264,6 +275,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     throw err;
   } finally {
     clearInterval(heartbeatInterval);
+    disposeTeardownHook(); // this bot's children are torn down below; drop the signal hook
     // Safety-net: if the happy path didn't already stop the session (error mid-meeting),
     // stop it here so ffmpeg is finalized and killed. No-op after a clean stop.
     if (captureSession) await stopAudioCapture(captureSession).catch(() => {});

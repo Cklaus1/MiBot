@@ -61,7 +61,7 @@
 - [x] D5 P2 — timezone validation at load · blockedBy: F3
 - [x] D7 P3 — missed-meeting sweep · blockedBy: F2
 - [x] D8 P3 — warn on changes===0 · blockedBy: F2
-- [ ] D9 P3 — closeDb on exit (wire, OQ8) · blockedBy: F2, R13
+- [x] D9 P3 — closeDb on exit (wire, OQ8) · blockedBy: F2, R13 — closeDb() registered as a shutdown hook (WAL checkpointed on SIGINT/SIGTERM)
 
 ## Wave 2 — Transcription + Calendar
 - [x] R6 — transcribe() returns outcome enum · blockedBy: F1
@@ -134,18 +134,18 @@
 - [x] J22 P3 — selector override element types · blockedBy: F3 — sanitizeSelectorList rejects arrays with any non-string element; malformed key falls back to default
 - [x] J23 P3 — raw text into text= engine · blockedBy: — — getByText().first() replaces text= selector-engine string (escapes /, quotes)
 - [x] J24 P3 — screenshot path concurrent clobber · blockedBy: — — defaultScreenshotPath includes pid + seq counter
-- [ ] R13 — control-socket edges + single graceful exit · blockedBy: R3
-- [ ] C1 P1 — signal handler never exits · blockedBy: R13
-- [ ] C2 P1 — no socket/server error handler · blockedBy: R13
+- [x] R13 — control-socket edges + single graceful exit · blockedBy: R3 — shutdown.ts single LIFO teardown path; control.ts error handlers + timeout + liveness sweep + parseControlResponse
+- [x] C1 P1 — signal handler never exits · blockedBy: R13 — per-ControlChannel SIGINT/SIGTERM removed; installShutdownHandlers() runs hooks then exit(130/143); per-bot hook disposed in finally (no leak)
+- [x] C2 P1 — no socket/server error handler · blockedBy: R13 — conn.on('error') + server.on('error') + destroyed-guarded write; EPIPE/EADDRINUSE no longer crash the bot
 - [x] C3 P1 — heartbeat interval not in finally · blockedBy: — — fixed by D3/R1 (bot.ts:98 outer-scope, cleared bot.ts:266 finally; stale-heartbeat.test.ts)
 - [x] C4 P1 — cross-bot ffmpeg kill · blockedBy: R2 — fixed by R2 CaptureSession (per-bot ffmpeg handle)
 - [x] C6 P1 — heartbeat accounting / activeBots · blockedBy: F6 — heartbeat lifecycle fixed by F6/R1/D3 (one interval join→processing, cleared in finally; heartbeat.test.ts)
-- [ ] C8 P2 — stale-socket sweep kills live sockets · blockedBy: R13
-- [ ] C9 P2 — sendCmd ok:false → exit 1 · blockedBy: R13
-- [ ] C10 P2 — sendCommand no timeout · blockedBy: R13
+- [x] C8 P2 — stale-socket sweep kills live sockets · blockedBy: R13 — sweepStaleSockets uses isSocketAlive connect-probe (ECONNREFUSED=stale), skips own + live sockets
+- [x] C9 P2 — sendCmd ok:false → exit 1 · blockedBy: R13 — parseControlResponse throws on ok:false; sendCmd exits 1 instead of printing raw JSON+exit 0
+- [x] C10 P2 — sendCommand no timeout · blockedBy: R13 — client.setTimeout(30s) → rejects "timed out" so `mibot send` can't hang on a wedged page
 - [ ] C11 P2 — JSON.parse(attendees) aborts poll · blockedBy: —
 - [ ] C12 P3 — wrap updateHeartbeat (was false-pos) · blockedBy: —
-- [ ] C13 P3 — log flush before exit · blockedBy: R13
+- [x] C13 P3 — log flush before exit · blockedBy: R13 — log.close() registered as a shutdown hook (unwinds last, LIFO) so the JSONL stream flushes before exit
 - [ ] C14 P1 — hung Chromium leak on close race · blockedBy: R3
 - [ ] C15 P3 — goto swallows nav (sibling J7) · blockedBy: —
 - [ ] C16 P3 — remove eval from usage (OQ8) · blockedBy: —

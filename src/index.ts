@@ -5,8 +5,10 @@ import {
   recoverStaleMeetings, sweepMissedMeetings, type Meeting,
 } from './db.js';
 import { loadConfig, saveDefaultConfig, shouldSkipMeeting, fmtTime } from './config.js';
-import { sendCommand } from './control.js';
+import { sendCommand, parseControlResponse } from './control.js';
 import { log } from './log.js';
+import { installShutdownHandlers, registerShutdownHook, runShutdown } from './shutdown.js';
+import { closeDb } from './db.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -15,6 +17,13 @@ const args = process.argv.slice(2);
 const command = args[0];
 
 async function main(): Promise<void> {
+  // Single graceful-teardown path (C1/C13/D9): flush the JSONL log and checkpoint
+  // the WAL on Ctrl+C / SIGTERM. Per-bot control channels register their own socket
+  // cleanup as hooks; these run last so children stop before the db closes.
+  registerShutdownHook('log', () => log.close());
+  registerShutdownHook('db', () => closeDb());
+  installShutdownHandlers();
+
   switch (command) {
     case 'start':    await startWatcher(); break;
     case 'join':     await joinCommand(args[1], args.includes('--title') ? args[args.indexOf('--title') + 1] : undefined); break;
@@ -189,8 +198,11 @@ async function sendCmd(meetingId: number, command: string): Promise<void> {
     process.exit(1);
   }
   try {
-    const result = await sendCommand(meetingId, command);
-    console.log(result);
+    const raw = await sendCommand(meetingId, command);
+    // C9: the server returns {ok:false,error} on a normal stream for a failed command.
+    // Inspect it so a failure exits non-zero instead of printing raw JSON and exiting 0.
+    const result = parseControlResponse(raw);
+    console.log(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
   } catch (err) {
     console.error(`Error: ${(err as Error).message}`);
     process.exit(1);
