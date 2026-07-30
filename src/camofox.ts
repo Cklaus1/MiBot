@@ -1,8 +1,10 @@
 import type { Page, Frame, Locator } from 'playwright';
+import { pollForFirst, type PollOptions } from './poll.js';
 
 const CAMOFOX_URL = process.env.CAMOFOX_URL || 'http://localhost:9377';
 const USER_ID = 'mibot';
 const SESSION_KEY = 'meet';
+const CAMOFOX_FETCH_TIMEOUT_MS = 15000;
 
 interface CamofoxTab {
   tabId: string;
@@ -31,22 +33,55 @@ export function parseCamofoxResponse(path: string, status: number, ok: boolean, 
   if (!ok) {
     throw new CamofoxApiError(`Camofox ${path} failed: HTTP ${status}`, path, status, excerpt);
   }
+  let parsed: any;
   try {
-    return JSON.parse(body);
+    parsed = JSON.parse(body);
   } catch {
     throw new CamofoxApiError(`Camofox ${path} returned non-JSON body`, path, status, excerpt);
   }
+  // J2: a 200 can still carry a semantic failure ({ok:false,error}). Callers (eval reads
+  // data.result, findRef parses data.snapshot) would treat the missing field as an empty
+  // success. Reject an explicit ok:false; leave bodies without an `ok` field (snapshot,
+  // bare arrays) untouched so only intentional failure envelopes are caught.
+  if (parsed && typeof parsed === 'object' && parsed.ok === false) {
+    const detail = typeof parsed.error === 'string' ? parsed.error : JSON.stringify(parsed).slice(0, 200);
+    throw new CamofoxApiError(`Camofox ${path} reported failure: ${detail}`, path, status, excerpt);
+  }
+  return parsed;
+}
+
+/** Test seam for camofoxFetch: inject a fake fetch and shorten the timeout so the J15
+ *  deadline path is exercisable without a live socket. */
+export interface CamofoxFetchOptions {
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
 }
 
 /** Single fetch choke point (R8): every JSON-returning camofox call reads the body once
  *  and validates it through parseCamofoxResponse, so a crashed/500ing server can never be
- *  mistaken for a valid response. `label` is the logical path used in error messages. */
-async function camofoxFetch(label: string, url: string, init?: RequestInit): Promise<any> {
+ *  mistaken for a valid response. `label` is the logical path used in error messages.
+ *  J15: every request is bounded by an AbortSignal timeout — a hung camofox connection
+ *  surfaces as a typed CamofoxApiError instead of blocking the bot forever. */
+export async function camofoxFetch(
+  label: string,
+  url: string,
+  init?: RequestInit,
+  opts?: CamofoxFetchOptions,
+): Promise<any> {
+  const fetchImpl = opts?.fetchImpl ?? fetch;
+  const timeoutMs = opts?.timeoutMs ?? CAMOFOX_FETCH_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
-    res = await fetch(url, init);
+    res = await fetchImpl(url, { ...init, signal: controller.signal });
   } catch (e) {
+    if (controller.signal.aborted) {
+      throw new CamofoxApiError(`Camofox ${label} timed out after ${timeoutMs}ms`, label, 0, '');
+    }
     throw new CamofoxApiError(`Camofox ${label} unreachable: ${(e as Error).message}`, label, 0, '');
+  } finally {
+    clearTimeout(timer);
   }
   const body = await res.text();
   return parseCamofoxResponse(label, res.status, res.ok, body);
@@ -96,10 +131,24 @@ export class CamofoxPage {
     await this.api('/type', { ref, text });
   }
 
-  /** Take a screenshot. */
+  /** Take a screenshot. Binary endpoint, so it can't use the JSON choke point — but it
+   *  still gets the J15 abort timeout so a hung camofox can't block the signal loop. */
   async screenshot(opts?: { path?: string }): Promise<Buffer> {
     if (!this.tabId) throw new Error('No tab');
-    const res = await fetch(`${CAMOFOX_URL}/tabs/${this.tabId}/screenshot?userId=${USER_ID}`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CAMOFOX_FETCH_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${CAMOFOX_URL}/tabs/${this.tabId}/screenshot?userId=${USER_ID}`, { signal: controller.signal });
+    } catch (e) {
+      const aborted = controller.signal.aborted;
+      throw new CamofoxApiError(
+        aborted ? `Camofox /screenshot timed out after ${CAMOFOX_FETCH_TIMEOUT_MS}ms` : `Camofox /screenshot unreachable: ${(e as Error).message}`,
+        '/screenshot', 0, '',
+      );
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) {
       throw new CamofoxApiError(`Camofox /screenshot failed: HTTP ${res.status}`, '/screenshot', res.status, '');
     }
@@ -253,6 +302,21 @@ export class CamofoxPage {
   }
 }
 
+/** J20: poll a real readiness signal (a successful accessibility snapshot) to a deadline
+ *  instead of a blind fixed sleep. Returns true the instant the page answers, false if the
+ *  deadline lapses. Clock injected (now/sleep) so it's unit-testable without real timers. */
+export async function awaitCamofoxReady(
+  page: { snapshot: () => Promise<unknown> },
+  opts: PollOptions = { deadlineMs: 30000, intervalMs: 1000 },
+): Promise<boolean> {
+  const match = await pollForFirst(
+    [page],
+    async (p) => { await p.snapshot(); return true; },
+    opts,
+  );
+  return match !== null;
+}
+
 /** Launch a camofox browser and navigate to the meeting URL. */
 export async function launchCamofox(url: string): Promise<CamofoxPage> {
   // Verify camofox is running
@@ -324,7 +388,12 @@ export async function launchCamofox(url: string): Promise<CamofoxPage> {
   const page = new CamofoxPage();
   // Create tab with initScript (WebRTC hook runs before any page JS)
   await page.createTab(url, webrtcHook);
-  await page.waitForTimeout(8000);
-  console.error('[mibot] Camofox browser ready (WebRTC hook pre-injected)');
+  // J20: wait on a real readiness signal (snapshot answers) instead of a blind 8s sleep.
+  const ready = await awaitCamofoxReady(page, { deadlineMs: 30000, intervalMs: 1000 });
+  if (!ready) {
+    console.error('[mibot] Camofox: page not ready after 30s (continuing anyway)');
+  } else {
+    console.error('[mibot] Camofox browser ready (WebRTC hook pre-injected)');
+  }
   return page;
 }

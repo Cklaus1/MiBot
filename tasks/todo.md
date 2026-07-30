@@ -119,7 +119,7 @@
 - [x] AU14 P3 — cleanupInfra: delete + document (OQ8) · blockedBy: —
 
 ## Wave 5 — Join hardening + CLI edges
-- [ ] J1/J2/J14/J15/J16/J20 — via F8 (R8) · blockedBy: F8
+- [x] J1/J2/J14/J15/J16/J20 — via F8 (R8) · blockedBy: F8 — J2 ok:false rejection in parseCamofoxResponse; J15 AbortSignal timeout in camofoxFetch + screenshot; J20 awaitCamofoxReady snapshot-poll replaces blind 8s sleep (camofox-api-edges.test.ts)
 - [x] J4/J8/J9/J5 — via F7 (R9) · blockedBy: F7 — discharged by Wave 0 findElement refactor (poll-for-first.test.ts; .first() guards playbook.ts:482/495/497; null-on-miss :463)
 - [ ] J6 P2 — camofox type no-op logs typed · blockedBy: F8
 - [ ] J7 P2 — goto swallows nav errors · blockedBy: —
