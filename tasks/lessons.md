@@ -51,3 +51,21 @@
 ### Divide by the actual iteration count, not the intended sample cap
 - **Mistake:** `isSimilar` looped `len/step` times but divided the diff count by `samples` (capped 500). For 500≤len<1000 `step` collapses to 1, so it compared up to 999 bytes while dividing by 500 → ~2× inflated ratio, near-identical small screenshots misread as different (M12).
 - **Rule:** When a sampling loop's real iteration count can diverge from the intended sample count, count iterations and divide by that.
+
+## 2026-07-29 — Build-loop Wave 4 (audio lifecycle)
+
+### One injector, run everywhere — don't hand-copy it per frame
+- **Mistake (AU1, P0):** The WebRTC hook had a main-frame copy (created `__mibotFlushedChunks`) and a *separate* hand-written iframe copy that omitted it. Zoom's WebRTC is in an iframe, so `flushAudioToDisk` read `undefined` and returned '' for the whole meeting — a silent no-audio for an entire platform.
+- **Rule:** For "same behavior in every frame + survive navigation", install ONE function via `context.addInitScript`, never a second `page.evaluate` copy. Two copies of injected script drift exactly like two copies of a pure helper (Wave 3 M16). Make the injected function reference `window` explicitly so it's unit-testable by binding a fake `window`.
+
+### Destructive-read-before-persist loses data on any downstream failure
+- **Mistake (AU8):** The flush did `flushed.splice(0)` (remove) *before* the payload crossed CDP and `appendFileSync` succeeded. A failed transfer or ENOSPC permanently lost that 15s window — and `catch{}` hid it.
+- **Rule:** Order side effects as read → persist → ack. Never remove from the source until the sink has confirmed. Split it so the ack step is a separate call that only runs after persist returns (the `drainAudioOnce` two-phase protocol). And never wrap a whole meeting's flushes in a silent `catch{}` — log the first failure + a periodic count (AU11), or the P0 failures stay invisible.
+
+### Choose the "winner" file by decoded content, not byte size
+- **Mistake (AU10):** `webrtcSize > 1000` gated whether the WebRTC file overwrote the ffmpeg recording. A 2s WebRTC stub (or >1KB of pure-silence opus) clobbered a full 1h pulse recording.
+- **Rule:** When two captures of the same event compete, compare decoded duration (ffprobe), require a real margin, and never overwrite the longer one. Size is not content.
+
+### Async lifecycle: a "stop" that doesn't await is a race, not a stop
+- **Mistake (AU4):** `stopRecording` sent SIGINT then immediately nulled the handle; the subsequent `copyFileSync` raced ffmpeg still writing the webm trailer, and an ffmpeg ignoring SIGINT leaked forever.
+- **Rule:** A stop must await the real exit (SIGINT → timeout → SIGKILL) before callers touch the output. Wrap child processes so 'error'/'exit' are always handled — an unhandled 'error' on a child EventEmitter crashes the process (AU6), and a missing 'exit' handler reports a mid-meeting death as success (AU5).

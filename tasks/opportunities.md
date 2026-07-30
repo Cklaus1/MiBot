@@ -11,7 +11,11 @@
 > Format: `- [OPT|BUG] <where> — <what> · <proposed severity/effort or "opt">`
 
 ## Optimizations (deferred — do not act during build)
-_(none yet — appended during the build loop)_
+- [OPT] `webrtc-capture.ts saveAudio()` — became unreferenced after the DRAIN rewrite removed
+  `extractAudio` (its only sibling). Left in place (not in any finding; deleting mid-wave would
+  be scope creep). Candidate for a dead-code sweep in a future pass · opt.
+- [OPT] `audio.ts getWebrtcAudioPath()` — kept as a deprecated alias of `webrtcAudioPathFor`
+  (AU13) for any out-of-tree caller; no in-repo call sites remain. Remove in a future cleanup · opt.
 
 ## Candidate bugs found during build (triage into a future DAG)
 - [RESOLVED] test isolation — shared on-disk `~/.config/mibot/mibot.db` caused an

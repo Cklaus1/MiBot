@@ -115,8 +115,8 @@
 - [x] AU6 P1 — no ffmpeg error handler · blockedBy: R3
 - [x] AU7 P2 — FileReader no onerror → hang · blockedBy: FA
 - [x] AU11 P2 — catch{} swallows flush errors · blockedBy: —
-- [ ] AU13 P3 — anchored webrtc-path helper (not a bug) · blockedBy: R2
-- [ ] AU14 P3 — cleanupInfra: delete + document (OQ8) · blockedBy: —
+- [x] AU13 P3 — anchored webrtc-path helper (not a bug) · blockedBy: R2
+- [x] AU14 P3 — cleanupInfra: delete + document (OQ8) · blockedBy: —
 
 ## Wave 5 — Join hardening + CLI edges
 - [ ] J1/J2/J14/J15/J16/J20 — via F8 (R8) · blockedBy: F8
