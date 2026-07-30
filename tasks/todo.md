@@ -121,13 +121,13 @@
 ## Wave 5 — Join hardening + CLI edges
 - [x] J1/J2/J14/J15/J16/J20 — via F8 (R8) · blockedBy: F8 — J2 ok:false rejection in parseCamofoxResponse; J15 AbortSignal timeout in camofoxFetch + screenshot; J20 awaitCamofoxReady snapshot-poll replaces blind 8s sleep (camofox-api-edges.test.ts)
 - [x] J4/J8/J9/J5 — via F7 (R9) · blockedBy: F7 — discharged by Wave 0 findElement refactor (poll-for-first.test.ts; .first() guards playbook.ts:482/495/497; null-on-miss :463)
-- [ ] J6 P2 — camofox type no-op logs typed · blockedBy: F8
+- [x] J6 P2 — camofox type no-op logs typed · blockedBy: F8 — buildTypeSetExpr reports write; type throws on no editable focus (camofox-interaction.test.ts)
 - [ ] J7 P2 — goto swallows nav errors · blockedBy: —
 - [x] J10 P2 — wait unknown-target silent success · blockedBy: F7 — findElement wait now covers text|selector|role|xpath|near_text (playbook.ts:357), throws on miss
-- [ ] J11 P2 — camofox clickElement CSS selector · blockedBy: F8
-- [ ] J12 P2 — findRef substring matches wrong el · blockedBy: F8
-- [ ] J13 P2 — signal observer destroyed by nav · blockedBy: F8
-- [ ] J17 P3 — camofox press untrusted events · blockedBy: F8
+- [x] J11 P2 — camofox clickElement CSS selector · blockedBy: F8 — selector target routes through buildSelectorClickExpr (DOM querySelector), not findRef
+- [x] J12 P2 — findRef substring matches wrong el · blockedBy: F8 — findRefInSnapshot name-scoped, exact→word→prefix→substring ladder (camofox-interaction.test.ts)
+- [x] J13 P2 — signal observer destroyed by nav · blockedBy: F8 — drainSignals re-installs idempotent SIGNAL_OBSERVER_SCRIPT each poll (self-heal after nav)
+- [x] J17 P3 — camofox press untrusted events · blockedBy: F8 — buildPressExpr reports focus; press throws when nothing focused (honest logging)
 - [ ] J18 P3 — playbook load no shape validation · blockedBy: F3
 - [ ] J19 P2 — js_click/eval ignore step.frame · blockedBy: —
 - [ ] J21 P3 — interpolate empty-string var · blockedBy: —

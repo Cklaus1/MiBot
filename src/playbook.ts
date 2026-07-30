@@ -1,5 +1,6 @@
 import type { Page, Frame, Locator } from 'playwright';
 import type { CamofoxPage } from './camofox.js';
+import { buildSelectorClickExpr, buildTypeSetExpr, buildPressExpr } from './camofox.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -163,26 +164,22 @@ export class CamofoxPlaybookEngine {
           const ref = await this.page.findRef(target);
           if (ref) await this.page.clickRef(ref);
         }
-        // Type character by character via eval
-        await this.page.eval(`
-          const el = document.activeElement;
-          if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) {
-            el.value = ${JSON.stringify(value)};
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-          }
-        `);
+        // J6: the eval reports whether it actually wrote to an editable element; fail loudly
+        // instead of logging a phantom "typed" when nothing was focused.
+        const wrote = await this.page.eval(buildTypeSetExpr(value));
+        if (!wrote) throw new Error(`type: no editable element focused for "${value}"`);
         console.error(`[playbook] Step ${num}: typed "${value}"`);
         return;
       }
 
-      case 'press':
-        const pressKey = JSON.stringify(step.key || 'Enter');
-        await this.page.eval(`
-          document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: ${pressKey}, bubbles: true }));
-          document.activeElement?.dispatchEvent(new KeyboardEvent('keyup', { key: ${pressKey}, bubbles: true }));
-        `);
+      case 'press': {
+        // J17: synthetic key events are untrusted; at minimum don't claim "pressed" when
+        // there was no focused element to receive them.
+        const pressed = await this.page.eval(buildPressExpr(step.key || 'Enter'));
+        if (!pressed) throw new Error(`press: no focused element for key ${step.key || 'Enter'}`);
         console.error(`[playbook] Step ${num}: pressed ${step.key}`);
         return;
+      }
 
       case 'screenshot': {
         const screenshotPath = step.path || `/tmp/mibot-step-${num}.png`;
@@ -221,17 +218,25 @@ export class CamofoxPlaybookEngine {
     }
   }
 
-  /** Click an element using camofox ref-based clicking. */
+  /** Click an element using camofox ref-based clicking. J11: a CSS selector can't be resolved
+   *  from the accessibility snapshot (findRef searches text), so a selector-only target is
+   *  clicked through the DOM via querySelector instead of silently never matching. */
   private async clickElement(step: PlaybookStep, timeout: number): Promise<boolean> {
-    const target = step.text || step.name || step.selector || '';
-    if (!target) return false;
+    const nameTarget = step.text || step.name || '';
     const start = Date.now();
     while (Date.now() - start < timeout) {
-      const ref = await this.page.findRef(target);
-      if (ref) {
-        await this.page.clickRef(ref);
-        return true;
+      if (nameTarget) {
+        const ref = await this.page.findRef(nameTarget);
+        if (ref) {
+          await this.page.clickRef(ref);
+          return true;
+        }
       }
+      if (step.selector) {
+        const result = await this.page.eval(buildSelectorClickExpr(step.selector));
+        if (result === 'clicked') return true;
+      }
+      if (!nameTarget && !step.selector) return false;
       await this.page.waitForTimeout(1000);
     }
     return false;

@@ -87,6 +87,52 @@ export async function camofoxFetch(
   return parseCamofoxResponse(label, res.status, res.ok, body);
 }
 
+/** J12: resolve an element ref from an accessibility snapshot by matching the element's
+ *  *name* (the quoted string), not the whole line. A preference ladder — exact → whole-word
+ *  → prefix → substring — guarantees a better candidate always beats an accidental substring
+ *  ("Join" no longer latches onto "Rejoin", and role words / ref digits never match at all).
+ *  Snapshot line format: `role "Name" [e12]`. Returns the ref (e.g. "e12") or null. */
+export function findRefInSnapshot(snapshot: string, target: string): string | null {
+  const needle = target.toLowerCase().trim();
+  if (!needle) return null;
+  const wordRe = new RegExp(`\\b${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+
+  let best: { ref: string; rank: number } | null = null;
+  for (const line of snapshot.split('\n')) {
+    const m = line.match(/"([^"]*)"\s*\[e(\d+)\]/);
+    if (!m) continue;
+    const name = m[1].toLowerCase();
+    const ref = `e${m[2]}`;
+    let rank = 0;
+    if (name === needle) rank = 4;
+    else if (wordRe.test(name)) rank = 3;
+    else if (name.startsWith(needle)) rank = 2;
+    else if (name.includes(needle)) rank = 1;
+    if (rank > 0 && (!best || rank > best.rank)) best = { ref, rank };
+    if (best?.rank === 4) break; // can't beat an exact match
+  }
+  return best ? best.ref : null;
+}
+
+/** J11: click a CSS-selector target through the DOM (findRef searches snapshot *text*, where
+ *  a selector never appears). Returns 'not found' if the selector matches nothing. */
+export function buildSelectorClickExpr(selector: string): string {
+  return `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el) { el.click(); return 'clicked'; } return 'not found'; })()`;
+}
+
+/** J6: set the focused editable element's value and REPORT whether a write happened, so a
+ *  mis-targeted type fails loudly instead of logging a phantom "typed". */
+export function buildTypeSetExpr(value: string): string {
+  return `(() => { const el = document.activeElement; if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) { el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('input', { bubbles: true })); return true; } return false; })()`;
+}
+
+/** J17: dispatch key events to the focused element and REPORT whether there was one to
+ *  receive them (synthetic events are untrusted, so at minimum don't claim success on none). */
+export function buildPressExpr(key: string): string {
+  const k = JSON.stringify(key);
+  return `(() => { const el = document.activeElement; if (!el) return false; el.dispatchEvent(new KeyboardEvent('keydown', { key: ${k}, bubbles: true })); el.dispatchEvent(new KeyboardEvent('keyup', { key: ${k}, bubbles: true })); return true; })()`;
+}
+
 /** Thin wrapper around camofox REST API that exposes a Playwright-like Page interface.
  *  Only implements methods used by the playbook engine + meeting detection. */
 export class CamofoxPage {
@@ -179,19 +225,11 @@ export class CamofoxPage {
     this.tabId = null;
   }
 
-  /** Find a ref by text in the snapshot. Returns the ref string or null. */
+  /** Find a ref by element name in the snapshot (J12: name-scoped, preference-ranked match
+   *  via findRefInSnapshot — no more "Join"→"Rejoin" or role-word false hits). */
   async findRef(text: string): Promise<string | null> {
     const { snapshot } = await this.snapshot();
-    // Parse snapshot for refs matching text
-    // Format: button "Join now" [e10]  or  textbox "Your name" [e7]
-    const lines = snapshot.split('\n');
-    for (const line of lines) {
-      if (line.toLowerCase().includes(text.toLowerCase())) {
-        const refMatch = line.match(/\[e(\d+)\]/);
-        if (refMatch) return `e${refMatch[1]}`;
-      }
-    }
-    return null;
+    return findRefInSnapshot(snapshot, text);
   }
 
   /** Click an element by visible text. Searches the snapshot for a matching ref. */
@@ -238,69 +276,77 @@ export class CamofoxPage {
 
   /** Install a MutationObserver that captures all meeting signals (chat, reactions, hand raises). */
   async installSignalObserver(): Promise<void> {
-    await this.eval(`
-      if (!window.__mibotSignals) {
-        window.__mibotSignals = [];
-        window.__mibotSeenSignals = new Set();
-
-        new MutationObserver((mutations) => {
-          for (const m of mutations) {
-            for (const node of m.addedNodes) {
-              if (!node.textContent) continue;
-              const text = node.textContent.trim();
-              if (text.length === 0 || text.length > 300) continue;
-
-              // Match meeting signals
-              const patterns = [
-                /(.+?) says in chat: (.+)/,
-                /(.+?) sent a (.+) reaction/,
-                /(.+?) raised a hand/,
-                /(.+?) raised their hand/,
-                /(.+?) lowered a hand/,
-                /(.+?) lowered their hand/,
-                /(.+?) is presenting/,
-                /(.+?) stopped presenting/,
-                /(.+?) joined/,
-                /(.+?) left/,
-              ];
-
-              for (const pattern of patterns) {
-                const match = text.match(pattern);
-                if (match) {
-                  const key = text + ':' + Math.floor(Date.now() / 3000); // dedup within 3s
-                  if (!window.__mibotSeenSignals.has(key)) {
-                    window.__mibotSeenSignals.add(key);
-                    window.__mibotSignals.push({
-                      raw: text,
-                      type: pattern.source.includes('chat') ? 'chat'
-                        : pattern.source.includes('reaction') ? 'reaction'
-                        : pattern.source.includes('hand') ? 'hand'
-                        : pattern.source.includes('presenting') ? 'screenshare'
-                        : 'participant',
-                      who: match[1],
-                      detail: match[2] || '',
-                      time: new Date().toISOString(),
-                    });
-                  }
-                  break;
-                }
-              }
-            }
-          }
-        }).observe(document.body, { childList: true, subtree: true });
-
-        console.log('[mibot] Signal observer installed');
-      }
-    `);
+    await this.eval(SIGNAL_OBSERVER_SCRIPT);
     console.error('[mibot] Camofox signal observer installed');
   }
 
-  /** Read and flush captured signals. */
+  /** Read and flush captured signals. J13: re-install the (idempotent) observer first so a
+   *  page that navigated/reloaded since the last poll — which wipes window.__mibotSignals and
+   *  kills the observer — re-arms itself instead of going silent for the rest of the meeting. */
   async drainSignals(): Promise<Array<{ raw: string; type: string; who: string; detail: string; time: string }>> {
+    await this.eval(SIGNAL_OBSERVER_SCRIPT).catch(() => {});
     const result = await this.eval('(() => { const s = window.__mibotSignals || []; window.__mibotSignals = []; return s; })()');
     return (result as any[]) || [];
   }
 }
+
+/** J13: the signal-capture observer as a single idempotent script (guarded by
+ *  `if (!window.__mibotSignals)`), so installing it repeatedly is a no-op while the page is
+ *  alive but re-arms a page that lost its window state to a navigation. */
+export const SIGNAL_OBSERVER_SCRIPT = `
+  if (!window.__mibotSignals) {
+    window.__mibotSignals = [];
+    window.__mibotSeenSignals = new Set();
+
+    new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (!node.textContent) continue;
+          const text = node.textContent.trim();
+          if (text.length === 0 || text.length > 300) continue;
+
+          // Match meeting signals
+          const patterns = [
+            /(.+?) says in chat: (.+)/,
+            /(.+?) sent a (.+) reaction/,
+            /(.+?) raised a hand/,
+            /(.+?) raised their hand/,
+            /(.+?) lowered a hand/,
+            /(.+?) lowered their hand/,
+            /(.+?) is presenting/,
+            /(.+?) stopped presenting/,
+            /(.+?) joined/,
+            /(.+?) left/,
+          ];
+
+          for (const pattern of patterns) {
+            const match = text.match(pattern);
+            if (match) {
+              const key = text + ':' + Math.floor(Date.now() / 3000); // dedup within 3s
+              if (!window.__mibotSeenSignals.has(key)) {
+                window.__mibotSeenSignals.add(key);
+                window.__mibotSignals.push({
+                  raw: text,
+                  type: pattern.source.includes('chat') ? 'chat'
+                    : pattern.source.includes('reaction') ? 'reaction'
+                    : pattern.source.includes('hand') ? 'hand'
+                    : pattern.source.includes('presenting') ? 'screenshare'
+                    : 'participant',
+                  who: match[1],
+                  detail: match[2] || '',
+                  time: new Date().toISOString(),
+                });
+              }
+              break;
+            }
+          }
+        }
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+
+    console.log('[mibot] Signal observer installed');
+  }
+`;
 
 /** J20: poll a real readiness signal (a successful accessibility snapshot) to a deadline
  *  instead of a blind fixed sleep. Returns true the instant the page answers, false if the
