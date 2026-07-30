@@ -120,10 +120,10 @@
 
 ## Wave 5 — Join hardening + CLI edges
 - [ ] J1/J2/J14/J15/J16/J20 — via F8 (R8) · blockedBy: F8
-- [ ] J4/J8/J9/J5 — via F7 (R9) · blockedBy: F7
+- [x] J4/J8/J9/J5 — via F7 (R9) · blockedBy: F7 — discharged by Wave 0 findElement refactor (poll-for-first.test.ts; .first() guards playbook.ts:482/495/497; null-on-miss :463)
 - [ ] J6 P2 — camofox type no-op logs typed · blockedBy: F8
 - [ ] J7 P2 — goto swallows nav errors · blockedBy: —
-- [ ] J10 P2 — wait unknown-target silent success · blockedBy: F7
+- [x] J10 P2 — wait unknown-target silent success · blockedBy: F7 — findElement wait now covers text|selector|role|xpath|near_text (playbook.ts:357), throws on miss
 - [ ] J11 P2 — camofox clickElement CSS selector · blockedBy: F8
 - [ ] J12 P2 — findRef substring matches wrong el · blockedBy: F8
 - [ ] J13 P2 — signal observer destroyed by nav · blockedBy: F8
@@ -137,9 +137,9 @@
 - [ ] R13 — control-socket edges + single graceful exit · blockedBy: R3
 - [ ] C1 P1 — signal handler never exits · blockedBy: R13
 - [ ] C2 P1 — no socket/server error handler · blockedBy: R13
-- [ ] C3 P1 — heartbeat interval not in finally · blockedBy: —
-- [ ] C4 P1 — cross-bot ffmpeg kill · blockedBy: R2
-- [ ] C6 P1 — heartbeat accounting / activeBots · blockedBy: F6
+- [x] C3 P1 — heartbeat interval not in finally · blockedBy: — — fixed by D3/R1 (bot.ts:98 outer-scope, cleared bot.ts:266 finally; stale-heartbeat.test.ts)
+- [x] C4 P1 — cross-bot ffmpeg kill · blockedBy: R2 — fixed by R2 CaptureSession (per-bot ffmpeg handle)
+- [x] C6 P1 — heartbeat accounting / activeBots · blockedBy: F6 — heartbeat lifecycle fixed by F6/R1/D3 (one interval join→processing, cleared in finally; heartbeat.test.ts)
 - [ ] C8 P2 — stale-socket sweep kills live sockets · blockedBy: R13
 - [ ] C9 P2 — sendCmd ok:false → exit 1 · blockedBy: R13
 - [ ] C10 P2 — sendCommand no timeout · blockedBy: R13
