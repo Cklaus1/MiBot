@@ -47,6 +47,19 @@ export const DEFAULT_SELECTORS: Record<Platform, PlatformSelectors> = {
 
 const SELECTORS_DIR = path.join(os.homedir(), '.config', 'mibot', 'selectors');
 
+/**
+ * Validate one override list. Returns the array only when it is an array of
+ * strings; otherwise null so the caller keeps the bundled default. Array.isArray
+ * alone was not enough — a JSON file with `[123, null]` passed that check and
+ * pushed non-string "selectors" into the DOM query APIs, which throw at scrape
+ * time far from the config that caused it.
+ */
+export function sanitizeSelectorList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  if (!value.every((el) => typeof el === 'string')) return null;
+  return value as string[];
+}
+
 const _cache = new Map<string, PlatformSelectors>();
 
 /**
@@ -64,9 +77,11 @@ export function loadSelectors(platform: string): PlatformSelectors {
   const overridePath = path.join(SELECTORS_DIR, `${platform}.json`);
   if (fs.existsSync(overridePath)) {
     try {
-      const override = JSON.parse(fs.readFileSync(overridePath, 'utf8')) as Partial<PlatformSelectors>;
-      if (Array.isArray(override.participantNames)) merged.participantNames = override.participantNames;
-      if (Array.isArray(override.activeSpeaker)) merged.activeSpeaker = override.activeSpeaker;
+      const override = JSON.parse(fs.readFileSync(overridePath, 'utf8')) as Record<string, unknown>;
+      const pn = sanitizeSelectorList(override.participantNames);
+      const as = sanitizeSelectorList(override.activeSpeaker);
+      if (pn) merged.participantNames = pn;
+      if (as) merged.activeSpeaker = as;
       console.error(`[mibot] Loaded selector override: ${overridePath}`);
     } catch (err) {
       console.error(`[mibot] Warning: invalid selectors at ${overridePath}, using defaults — ${(err as Error).message}`);

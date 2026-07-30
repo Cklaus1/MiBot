@@ -131,7 +131,7 @@
 - [x] J18 P3 — playbook load no shape validation · blockedBy: F3 — validatePlaybook() fails fast on non-object/missing-steps/step-without-action; load() wraps it
 - [x] J19 P2 — js_click/eval ignore step.frame · blockedBy: — — evalFrame(step.frame) routes js_click/eval to the target frame
 - [x] J21 P3 — interpolate empty-string var · blockedBy: — — interpolateVars uses `key in vars` not `|| placeholder`; "" now substitutes
-- [ ] J22 P3 — selector override element types · blockedBy: F3
+- [x] J22 P3 — selector override element types · blockedBy: F3 — sanitizeSelectorList rejects arrays with any non-string element; malformed key falls back to default
 - [x] J23 P3 — raw text into text= engine · blockedBy: — — getByText().first() replaces text= selector-engine string (escapes /, quotes)
 - [x] J24 P3 — screenshot path concurrent clobber · blockedBy: — — defaultScreenshotPath includes pid + seq counter
 - [ ] R13 — control-socket edges + single graceful exit · blockedBy: R3
