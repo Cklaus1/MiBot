@@ -93,6 +93,26 @@ export function canTransitionMeeting(from: MeetingStatus, to: MeetingStatus): bo
   return MEETING_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
+/** Is `s` a status this state machine knows at all? Guards against a typo'd literal being
+ *  written straight into the column (the machine can only judge statuses it defines). */
+export function isKnownMeetingStatus(s: string): s is MeetingStatus {
+  return Object.prototype.hasOwnProperty.call(MEETING_TRANSITIONS, s);
+}
+
+/**
+ * The statuses that may legally precede `to` — the transition table inverted.
+ *
+ * The DB layer enforces transitions with a guarded `UPDATE … WHERE status IN (<these>)`
+ * rather than a read-then-write, so enforcement is atomic (the same reason
+ * applyRecordingStatus is one statement). A same-status write is included so an idempotent
+ * re-write of the current status stays a no-op rather than being reported as illegal.
+ */
+export function legalPredecessorsOf(to: MeetingStatus): MeetingStatus[] {
+  const from = (Object.keys(MEETING_TRANSITIONS) as MeetingStatus[])
+    .filter((f) => MEETING_TRANSITIONS[f].includes(to));
+  return from.includes(to) ? from : [...from, to];
+}
+
 /**
  * C7 choke point: given the recording's current status and the status a catch-all
  * *wants* to write, return the status that should actually be persisted. A terminal

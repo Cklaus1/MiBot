@@ -2,7 +2,10 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import { isTerminalRecordingStatus, TERMINAL_RECORDING_STATUSES, type RecordingStatus } from './status.js';
+import {
+  isTerminalRecordingStatus, TERMINAL_RECORDING_STATUSES, isKnownMeetingStatus,
+  legalPredecessorsOf, type RecordingStatus, type MeetingStatus,
+} from './status.js';
 import { runMigrations } from './migrations.js';
 
 // MIBOT_DB_PATH overrides the DB location (used by the test suite to point each test file
@@ -180,7 +183,33 @@ export function updateMeeting(id: number, updates: Record<string, unknown>): voi
     vals.push(new Date().toISOString());
   }
   vals.push(id);
-  const res = db.prepare(`UPDATE meetings SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+
+  // MEETING_TRANSITIONS was fully specified in status.ts but never consulted: this function
+  // validated the column NAME and never the VALUE, so `done -> joining` (rejoining a finished
+  // meeting) and a catch-all `-> failed` after `done` both wrote silently. Enforce it as part
+  // of the UPDATE's WHERE -- atomic, like applyRecordingStatus, rather than read-then-write.
+  // The whole statement is guarded, so an illegal status can't half-apply its sibling columns.
+  let where = 'id = ?';
+  const desired = updates.status;
+  if (desired !== undefined) {
+    if (typeof desired !== 'string' || !isKnownMeetingStatus(desired)) {
+      console.error(`[mibot] WARN: refused unknown meeting status "${String(desired)}" for id=${id}`);
+      return;
+    }
+    const allowed = legalPredecessorsOf(desired);
+    where += ` AND status IN (${allowed.map(() => '?').join(', ')})`;
+    vals.push(...allowed);
+  }
+
+  const res = db.prepare(`UPDATE meetings SET ${sets.join(', ')} WHERE ${where}`).run(...vals);
+  if (res.changes === 0 && desired !== undefined) {
+    const current = getMeeting(id)?.status;
+    // Distinguish a refused transition from a genuinely stale id -- they need different fixes.
+    if (current) {
+      console.error(`[mibot] WARN: refused illegal meeting transition ${current} -> ${desired} (id=${id})`);
+      return;
+    }
+  }
   warnIfNoOp('meetings', id, res.changes);
 }
 

@@ -4,6 +4,7 @@ import {
   closeDb, insertMeeting, getMeeting, getScheduledEventIds, updateMeeting,
 } from '../src/db.js';
 import type { Meeting } from '../src/db.js';
+import { advanceMeeting } from './helpers/status.js';
 
 // CA2: calendar events were inserted once and NEVER updated — a rescheduled meeting kept its
 // stale start_time (MiBot joins at the wrong time / not at all) and a cancelled meeting was
@@ -63,7 +64,7 @@ describe('getScheduledEventIds (CA2 cancellation source)', () => {
     expect(ids).toContain(`m365:${tag}a`);
     expect(ids).not.toContain(`gcal:${tag}b`);
     // a done meeting is not a cancellation candidate
-    updateMeeting(a.id, { status: 'done' });
+    advanceMeeting(a.id, 'done');
     expect(getScheduledEventIds('m365:')).not.toContain(`m365:${tag}a`);
   });
 });

@@ -3,6 +3,7 @@ import {
   getDb, closeDb, insertMeeting, insertRecording, getRecording,
   applyRecordingStatus, updateMeetingStatus, recoverStaleMeetings,
 } from '../src/db.js';
+import { advanceMeeting } from './helpers/status.js';
 
 // D4 P2: recoverStaleMeetings flips a dead bot's meeting to `failed` but used to leave its
 // recordings row stuck at `recording` forever (orphan). Fix: in the SAME transaction, fail
@@ -17,7 +18,7 @@ describe('recoverStaleMeetings orphan recordings (D4)', () => {
       title: 'orphan', platform: 'teams',
       join_url: 'https://teams.microsoft.com/x', start_time: new Date().toISOString(),
     });
-    updateMeetingStatus(m.id, 'in_call');
+    advanceMeeting(m.id, 'in_call');
     const r = insertRecording({ meeting_id: m.id, audio_path: '/tmp/o.webm' });
     if (recStatus) applyRecordingStatus(r.id, recStatus as any);
     // Force the meeting stale so recover kills it.
@@ -49,7 +50,7 @@ describe('recoverStaleMeetings orphan recordings (D4)', () => {
       title: 'live', platform: 'zoom',
       join_url: 'https://zoom/x', start_time: new Date().toISOString(),
     });
-    updateMeetingStatus(m.id, 'in_call'); // fresh heartbeat
+    advanceMeeting(m.id, 'in_call'); // fresh heartbeat
     const r = insertRecording({ meeting_id: m.id, audio_path: '/tmp/live.webm' });
     recoverStaleMeetings();
     expect(getRecording(r.id)!.status).toBe('recording');

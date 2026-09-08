@@ -3,6 +3,7 @@ import {
   getDb, closeDb, insertMeeting, getMeeting,
   updateMeetingStatus, recoverStaleMeetings,
 } from '../src/db.js';
+import { advanceMeeting } from './helpers/status.js';
 
 // F6/AR6: heartbeat is the single source of liveness truth. It must be stamped in the
 // SAME statement as every status transition (and at insert), so recoverStaleMeetings
@@ -29,7 +30,7 @@ describe('heartbeat-as-liveness (F6/AR6)', () => {
     // force an old heartbeat, then transition
     getDb().prepare('UPDATE meetings SET heartbeat = ? WHERE id = ?')
       .run('2000-01-01T00:00:00.000Z', m.id);
-    updateMeetingStatus(m.id, 'in_call');
+    advanceMeeting(m.id, 'in_call');
     const after = getMeeting(m.id)!;
     expect(after.status).toBe('in_call');
     // heartbeat must have moved forward past the ancient value
@@ -38,14 +39,14 @@ describe('heartbeat-as-liveness (F6/AR6)', () => {
 
   it('recoverStaleMeetings does NOT kill a meeting that just transitioned', () => {
     const m = mk();
-    updateMeetingStatus(m.id, 'in_call'); // fresh heartbeat via same statement
+    advanceMeeting(m.id, 'in_call'); // fresh heartbeat via same statement
     recoverStaleMeetings();
     expect(getMeeting(m.id)!.status).toBe('in_call');
   });
 
   it('recoverStaleMeetings DOES kill a meeting whose heartbeat went stale', () => {
     const m = mk();
-    updateMeetingStatus(m.id, 'in_call');
+    advanceMeeting(m.id, 'in_call');
     getDb().prepare('UPDATE meetings SET heartbeat = ? WHERE id = ?')
       .run('2000-01-01T00:00:00.000Z', m.id);
     const killed = recoverStaleMeetings();

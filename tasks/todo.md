@@ -173,6 +173,6 @@ Source: the four-agent holistic review. Ordered as the user listed them.
 - [ ] 3. Port DRAIN + tail-capture to the Meet (camofox) audio path
 - [ ] 4. Three hardening fixes: guarded-UPDATE applyRecordingStatus, getMeeting(id) in
       activeBots, uncaughtException handler + per-hook shutdown timeout
-- [ ] 5. Wire canTransitionMeeting into the meeting status write path
+- [x] 5. Wire canTransitionMeeting into the meeting status write path
 - [ ] 6. Delete the tautological tests; add a FakePage for PlaybookEngine.run
 - [ ] 7. Pragmatic AR1 slice

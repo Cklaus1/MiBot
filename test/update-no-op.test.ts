@@ -3,6 +3,7 @@ import {
   getDb, closeDb, insertMeeting, insertRecording,
   updateMeeting, updateRecording,
 } from '../src/db.js';
+import { advanceMeeting } from './helpers/status.js';
 
 // D8 P3: update* helpers ignored result.changes, so an update targeting a stale/wrong id was
 // a SILENT no-op — a status that never actually persisted looked successful. Fix: warn (never
@@ -26,7 +27,7 @@ describe('update no-op warning (D8)', () => {
       join_url: 'https://x', start_time: new Date().toISOString(),
     });
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    updateMeeting(m.id, { status: 'in_call' });
+    advanceMeeting(m.id, 'in_call');
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });

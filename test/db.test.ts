@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { getDb, closeDb, insertMeeting, getMeeting, updateMeeting, listMeetings, getUpcomingMeetings } from '../src/db.js';
+import { advanceMeeting } from './helpers/status.js';
 
 describe('Database', () => {
   beforeAll(() => {
@@ -36,7 +37,7 @@ describe('Database', () => {
       join_url: 'https://zoom.us/j/123',
       start_time: new Date().toISOString(),
     });
-    updateMeeting(meeting.id, { status: 'in_call' });
+    advanceMeeting(meeting.id, 'in_call');
     const updated = getMeeting(meeting.id);
     expect(updated!.status).toBe('in_call');
   });
