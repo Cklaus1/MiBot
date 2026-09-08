@@ -107,3 +107,44 @@
 ### Concurrency-safe cleanup must distinguish a crashed peer from a live one
 - **Mistake (J3):** the sweep reclaimed *every* `meet.google.com` tab under the shared USER_ID — correct for a crashed prior run, catastrophic for a concurrent bot (it deleted the live meeting tab mid-call).
 - **Rule:** Shared-resource reclamation keys off *liveness*, not identity-of-kind. Tag each resource with its owner pid on creation; before reclaiming, probe `kill(pid, 0)` (ESRCH=dead→reclaim, EPERM=alive→keep). Unowned = crashed run = reclaimable. Encode the decision as a pure seam (`selectStaleTabs`) so both the crash and concurrent cases are unit-tested without real processes.
+
+## Wave 7 — post-review remediation
+
+- **A deferral's stated REASON deserves the same scrutiny as a fix.** CA9 was parked as a
+  dormant P3 on the premise "Graph returns UTC by default." That premise was backwards —
+  absent a `Prefer: outlook.timezone` header Graph returns the *mailbox default zone* — so a
+  live P1 (every non-UTC mailbox's meetings silently swept to `missed`, never joined) sat
+  unfixed for a whole run. When deferring, record the reason as a claim to be checked, not
+  as a settled fact.
+
+- **Tables that are never called are not safety features.** `MEETING_TRANSITIONS` was fully
+  specified in status.ts and consulted by nothing; `updateMeeting` validated the column NAME
+  and never the VALUE. Enforcement, not specification, is what makes a state machine real —
+  and the enforcement point belongs where the write happens.
+
+- **Enforce invariants in the WHERE clause, not in a read-then-write.** A `SELECT` then
+  `UPDATE` only holds if nothing interleaves. Both the C7 recording rule and the meeting
+  transition rule are now single guarded statements. Bonus property: a guarded UPDATE can't
+  half-apply — a rejected status also can't write its sibling `actual_start`.
+
+- **When enforcement breaks existing tests, ask which side is wrong before fixing either.**
+  Six tests broke on `scheduled -> in_call`. Production never takes that jump (bot.ts stamps
+  `joining` first), so the tests were the ones taking a shortcut. Fixing the tests to walk the
+  real path was right; loosening the table to make them pass would have deleted the fix. A
+  fixture that can't be built by a legal sequence can't occur in production either.
+
+- **A silent failure needs a loud diagnostic, not just a better guess.** The Meet People-count
+  regex had never been checked against a real snapshot. On a miss the loop keeps its 1-human
+  default and never alone-exits — indistinguishable from a healthy call. Widening the patterns
+  helps, but the durable fix is that a sustained miss now warns with the offending line, and
+  the first snapshot is dumped for verification.
+
+- **Port the fix to every engine that has the same bug.** DRAIN (AU8) and tail-capture (AU3)
+  were fixed on the Playwright path and never carried to camofox, so every Meet recording kept
+  losing its tail and could lose a 5s window on any transfer failure. When two loops do the
+  same job, a fix to one is a bug report against the other.
+
+- **Prefer extracting what is genuinely shared over unifying interfaces.** The AR1 slice moved
+  roster diffing and speaker segmentation — browser-independent, unit-testable, and quietly
+  drifted between the two copies — into src/roster.ts, without forcing a BrowserBackend over
+  two page objects whose APIs have nothing in common.

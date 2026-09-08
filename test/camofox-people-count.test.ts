@@ -87,3 +87,40 @@ describe('M15 camofox loop leaves when everyone drops out', () => {
     expect(left).toBe(false);
   });
 });
+
+// Item 1: the original single pattern was written against no recorded snapshot — none has
+// ever been captured from a live Meet call. A miss is SILENT (lastKnownHumanCount keeps its
+// 1-human default, so M15's alone-detection never fires and the bot records an empty room to
+// maxDuration), so the parser now accepts the plausible renderings instead of betting on one.
+describe('parsePeopleCount tolerance (item 1)', () => {
+  const cases: [string, string, number][] = [
+    ['value after the ref', 'button "People" [ref=e12]: "3"', 3],
+    ['count inlined in the label', 'button "People (4)" [ref=e12]', 4],
+    ['aria-label with participants', 'button "5 participants" [ref=e9]', 5],
+    ['aria-label singular', 'button "1 participant" [ref=e9]', 1],
+    ['aria-label people wording', 'button "7 people" [ref=e9]', 7],
+    ['digits elsewhere on the People line', 'button "People" [ref=e12] badge=2', 2],
+  ];
+  for (const [name, snap, want] of cases) {
+    it(`parses: ${name}`, () => expect(parsePeopleCount(snap)).toBe(want));
+  }
+
+  it('still returns null when there is no People control at all', () => {
+    expect(parsePeopleCount('button "Chat" [ref=e1]: "9"\nbutton "Raise hand" [ref=e2]')).toBeNull();
+  });
+
+  it('does not mistake another control\'s count for the People count', () => {
+    expect(parsePeopleCount('button "Chat" [ref=e1]: "8"')).toBeNull();
+  });
+
+  it('picks the People line out of a realistic multi-line snapshot', () => {
+    const snap = [
+      'generic [ref=e1]',
+      '  button "Chat with everyone" [ref=e10]: "2"',
+      '  button "People" [ref=e12]: "3"',
+      '  button "Leave call" [ref=e14]',
+    ].join('\n');
+    expect(parsePeopleCount(snap)).toBe(3);
+    expect(camofoxHumanCount(parsePeopleCount(snap))).toBe(2);
+  });
+});

@@ -43,9 +43,32 @@ export function detectPlatform(url: string): 'zoom' | 'teams' | 'meet' | null {
  * as unknown (and NOT trigger a false alone-exit) rather than assuming zero.
  */
 export function parsePeopleCount(snapshot: string): number | null {
-  const m = snapshot.match(/button "People" \[.*?\]: "(\d+)"/);
-  return m ? parseInt(m[1], 10) : null;
+  for (const re of PEOPLE_COUNT_PATTERNS) {
+    const m = snapshot.match(re);
+    if (m) return parseInt(m[1], 10);
+  }
+  return null;
 }
+
+/**
+ * Accepted shapes for the People control in a Meet a11y snapshot.
+ *
+ * This started as a single pattern matched against no recorded snapshot. If Meet renders the
+ * control even slightly differently, the count never parses, `lastKnownHumanCount` stays at
+ * its 1 default forever, and M15's alone-detection silently never fires — the bot records an
+ * empty room to maxDuration, which is exactly the bug M15 was written to fix. A miss is
+ * therefore invisible, so tolerate the plausible renderings rather than betting on one.
+ * Ordered most- to least-specific; each must capture the digits in group 1.
+ */
+/** ~1 minute of 5s polls: past the warm-up, so a real join has had time to render the panel. */
+const PEOPLE_COUNT_WARN_AFTER = 12;
+
+const PEOPLE_COUNT_PATTERNS: RegExp[] = [
+  /button "People" \[.*?\]: "(\d+)"/,        // original: value rendered after the ref
+  /button "People \((\d+)\)"/,               // count inlined in the label
+  /button "(\d+) (?:participants?|people)"/i, // aria-label carries the count
+  /button "People"[^\n]*?\b(\d+)\b/,        // any digits on the People button's line
+];
 
 /**
  * M15: convert a raw People count (which includes the bot itself) into a human count for
@@ -547,6 +570,8 @@ async function monitorCamofoxMeeting(
   );
   const MIN_CALL_SECONDS = 60; // Warm-up: don't ACT on "ended"/"alone" in the first 60 seconds
   let lastKnownHumanCount = 1; // Unknown People count → assume a human present (never false-exit)
+  let peopleCountMisses = 0;   // consecutive polls with no parseable People count
+  let snapshotDumped = false;  // dump the first snapshot once per meeting (verification aid)
   let isPresenting = false;
   let lastScreenshotTime = 0;
   let lastScreenshotBuf: Buffer | null = null;
@@ -610,6 +635,19 @@ async function monitorCamofoxMeeting(
     try {
       const { snapshot } = await page.snapshot();
 
+      // Item 1 live-verification hook: the People-count regexes have never been checked
+      // against a real Meet snapshot (none was ever recorded). Dump the first one per meeting
+      // so any live call leaves an artifact to verify the parse against, without needing a
+      // control channel on this path (ControlChannel is Playwright-only).
+      if (!snapshotDumped) {
+        snapshotDumped = true;
+        try {
+          const dumpPath = path.join(screenshotDir, 'snapshot-first.txt');
+          fs.writeFileSync(dumpPath, snapshot);
+          console.error(`[mibot] Snapshot dumped for verification: ${dumpPath} (People count parsed: ${parsePeopleCount(snapshot)})`);
+        } catch { /* diagnostics must never break the loop */ }
+      }
+
       // Extract participant names from snapshot (Meet shows names in various elements)
       const participantNames = await page.eval(`
         (() => {
@@ -656,7 +694,18 @@ async function monitorCamofoxMeeting(
       if (speakerResult) roster.markSpoke(speakerResult);
 
       const count = parsePeopleCount(snapshot);
+      if (count === null) {
+        peopleCountMisses++;
+        // A never-parsing People count is silent: the loop just keeps its 1-human default and
+        // never alone-exits. Say so once, with a snippet, so a live run diagnoses itself
+        // instead of the failure only showing up as a maxDuration recording of an empty room.
+        if (peopleCountMisses === PEOPLE_COUNT_WARN_AFTER) {
+          const line = snapshot.split('\n').find((l) => l.includes('People')) ?? '(no "People" line in snapshot)';
+          log.warn(`People count unparsed after ${peopleCountMisses} polls — alone-detection is inactive. Snapshot line: ${line.trim().slice(0, 200)}`);
+        }
+      }
       if (count !== null) {
+        peopleCountMisses = 0;
         // M15: People count includes the bot; humans = count - 1. Only overwrite the last-known
         // count when we actually parsed it (an unknown snapshot must not read as "0 humans").
         lastKnownHumanCount = camofoxHumanCount(count) ?? lastKnownHumanCount;
