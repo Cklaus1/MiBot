@@ -14,7 +14,8 @@ import { launchBrowser } from './recorder.js';
 import { installAudioCapture } from './webrtc-capture.js';
 import { PlaybookEngine, CamofoxPlaybookEngine } from './playbook.js';
 import { ControlChannel } from './control.js';
-import { waitForMeetingEnd } from './meeting.js';
+import { waitForMeetingEnd, SpeakerTracker } from './meeting.js';
+import { RosterTracker } from './roster.js';
 import { LeavePolicy } from './leave-policy.js';
 import { isSimilarImage } from './image-similarity.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
@@ -519,10 +520,12 @@ async function monitorCamofoxMeeting(
   config: ReturnType<typeof loadConfig>,
 ): Promise<CamofoxMonitorResult> {
   const allSignals: Array<{ raw: string; type: string; who: string; detail: string; time: string }> = [];
-  const participantMap = new Map<string, { name: string; joined_at: string; left_at: string | null; is_bot: boolean; spoke: boolean }>();
-  const speakerSegments: Array<{ speaker: string; start: string; end: string | null }> = [];
-  let currentSpeaker: string | null = null;
-  let currentSpeakerStart: string | null = null;
+  // AR1 slice: the roster diff and speaker segmentation are the same browser-independent
+  // bookkeeping the Playwright loop does. They were hand-rolled a second time here and had
+  // drifted — this copy never logged join/leave and never reclassified a bot. Both loops now
+  // share RosterTracker + SpeakerTracker.
+  const roster = new RosterTracker((msg) => console.error(`[mibot] ${msg}`));
+  const speakerTracker = new SpeakerTracker();
   const startTime = Date.now();
   const maxMs = config.maxDurationHours * 60 * 60 * 1000;
   let lastParticipantCount = -1;
@@ -631,22 +634,7 @@ async function monitorCamofoxMeeting(
         })()
       `) as string[];
       if (participantNames && participantNames.length > 0) {
-        const now = new Date().toISOString();
-        const currentNames = new Set(participantNames);
-        for (const name of participantNames) {
-          if (!participantMap.has(name)) {
-            participantMap.set(name, { name, joined_at: now, left_at: null, is_bot: isBot(name), spoke: false });
-          } else {
-            const p = participantMap.get(name)!;
-            if (p.left_at) { p.left_at = null; } // rejoined
-          }
-        }
-        // Mark participants who left
-        for (const [name, p] of participantMap) {
-          if (!currentNames.has(name) && !p.left_at) {
-            p.left_at = now;
-          }
-        }
+        roster.observe(new Map(participantNames.map((n) => [n, isBot(n)])));
       }
 
       // Detect active speaker from snapshot. Overlay selectors are config-driven
@@ -664,18 +652,8 @@ async function monitorCamofoxMeeting(
           return null;
         })()
       `) as string | null;
-      if (speakerResult !== currentSpeaker) {
-        const now = new Date().toISOString();
-        if (currentSpeaker && currentSpeakerStart) {
-          speakerSegments.push({ speaker: currentSpeaker, start: currentSpeakerStart, end: now });
-        }
-        currentSpeaker = speakerResult;
-        currentSpeakerStart = speakerResult ? now : null;
-        if (speakerResult) {
-          const p = participantMap.get(speakerResult);
-          if (p) p.spoke = true;
-        }
-      }
+      speakerTracker.update(speakerResult);
+      if (speakerResult) roster.markSpoke(speakerResult);
 
       const count = parsePeopleCount(snapshot);
       if (count !== null) {
@@ -683,7 +661,7 @@ async function monitorCamofoxMeeting(
         // count when we actually parsed it (an unknown snapshot must not read as "0 humans").
         lastKnownHumanCount = camofoxHumanCount(count) ?? lastKnownHumanCount;
         if (count !== lastParticipantCount) {
-          console.error(`[mibot] Participants: ${count}${participantMap.size > 0 ? ` (${[...participantMap.keys()].join(', ')})` : ''}`);
+          console.error(`[mibot] Participants: ${count}${roster.size > 0 ? ` (${roster.names().join(', ')})` : ''}`);
           lastParticipantCount = count;
         }
       }
@@ -771,18 +749,8 @@ async function monitorCamofoxMeeting(
   };
   console.error(`[mibot] Signals: ${signals.chat.length} chat, ${signals.reactions.length} reactions, ${signals.hand_raises.length} hands`);
 
-  // Close any open speaker segment
-  if (currentSpeaker && currentSpeakerStart) {
-    speakerSegments.push({ speaker: currentSpeaker, start: currentSpeakerStart, end: new Date().toISOString() });
-  }
-
-  // Close any open participant leave times
-  const endTime = new Date().toISOString();
-  for (const p of participantMap.values()) {
-    if (!p.left_at) p.left_at = endTime;
-  }
-
-  const participants = [...participantMap.values()];
+  const speakerSegments = speakerTracker.finish();
+  const participants = roster.finish();
   console.error(`[mibot] Participants tracked: ${participants.length} (${participants.filter(p => p.spoke).length} spoke)`);
   console.error(`[mibot] Speaker segments: ${speakerSegments.length}`);
 

@@ -175,4 +175,4 @@ Source: the four-agent holistic review. Ordered as the user listed them.
       activeBots, uncaughtException handler + per-hook shutdown timeout
 - [x] 5. Wire canTransitionMeeting into the meeting status write path
 - [ ] 6. Delete the tautological tests; add a FakePage for PlaybookEngine.run
-- [ ] 7. Pragmatic AR1 slice
+- [x] 7. Pragmatic AR1 slice

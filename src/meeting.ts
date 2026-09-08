@@ -1,3 +1,4 @@
+import { RosterTracker } from './roster.js';
 import { type Page } from 'playwright';
 import os from 'os';
 import path from 'path';
@@ -243,8 +244,9 @@ export async function waitForMeetingEnd(
     startTime,
   );
 
-  // Track all participants and active speaker over time
-  const participantMap = new Map<string, Participant>();
+  // Track all participants and active speaker over time. RosterTracker is shared with the
+  // camofox loop (AR1 slice) — the join/leave diff is identical and browser-independent.
+  const roster = new RosterTracker((msg) => console.error(`[mibot] ${msg}`));
   const speakerTracker = new SpeakerTracker();
 
   const MIN_CALL_SECONDS = 60; // Warm-up: don't ACT on "ended" in the first 60 seconds
@@ -281,24 +283,7 @@ export async function waitForMeetingEnd(
     for (const name of humans) allCurrent.set(name, false);
     for (const name of bots) allCurrent.set(name, true); // bot classification wins on conflict
 
-    const now = new Date().toISOString();
-    for (const [name, isBotFlag] of allCurrent) {
-      if (!participantMap.has(name)) {
-        participantMap.set(name, { name, joined_at: now, left_at: null, is_bot: isBotFlag, spoke: false });
-        console.error(`[mibot] ${isBotFlag ? 'Bot' : 'Participant'} joined: ${name}`);
-      } else {
-        const p = participantMap.get(name)!;
-        if (p.is_bot !== isBotFlag) p.is_bot = isBotFlag;
-        if (p.left_at) { p.left_at = null; console.error(`[mibot] Participant rejoined: ${name}`); }
-      }
-    }
-    // Mark participants who left (not in current set)
-    for (const [name, p] of participantMap) {
-      if (!allCurrent.has(name) && !p.left_at) {
-        p.left_at = now;
-        console.error(`[mibot] Participant left: ${name}`);
-      }
-    }
+    roster.observe(allCurrent);
 
     // Track active speaker
     const speaker = await getActiveSpeaker(page, platform);
@@ -333,12 +318,7 @@ export async function waitForMeetingEnd(
   }
 
   // Finalize
-  const now = new Date().toISOString();
-  for (const p of participantMap.values()) {
-    if (!p.left_at) p.left_at = now;
-  }
-
-  const participants = [...participantMap.values()];
+  const participants = roster.finish();
   const speakerTimeline = speakerTracker.finish().filter(s => s.speaker !== null);
   speakerTracker.markSpeakers(participants);
 
