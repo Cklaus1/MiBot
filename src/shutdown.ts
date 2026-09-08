@@ -26,6 +26,11 @@ interface Hook {
   fn: ShutdownHook;
 }
 
+/** Per-hook deadline. A hook that hasn't settled by now is abandoned (not cancelled — we
+ *  can't cancel a promise) so the remaining hooks still run. Generous enough that a normal
+ *  ffmpeg stop or browser close finishes well inside it. */
+export const HOOK_TIMEOUT_MS = 10000;
+
 let hooks: Hook[] = [];
 let shuttingDown = false;
 let installed = false;
@@ -56,11 +61,23 @@ export async function runShutdown(): Promise<void> {
   // Reverse (LIFO) order: last-registered / shortest-lived resources unwind first,
   // so the log and db (registered at startup) are still open while children stop.
   for (const hook of [...hooks].reverse()) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await hook.fn();
+      // A hook that never settles used to block every hook after it — including closeDb and
+      // log.close — so one wedged ffmpeg stranded the whole teardown with no force-exit.
+      // Bound each hook: on expiry we move on and let the straggler be reaped by process exit.
+      const deadline = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), HOOK_TIMEOUT_MS);
+      });
+      const outcome = await Promise.race([hook.fn(), deadline]);
+      if (outcome === 'timeout') {
+        console.error(`[mibot] shutdown hook "${hook.name}" timed out after ${HOOK_TIMEOUT_MS}ms — continuing`);
+      }
     } catch (err) {
       // Best effort — a broken hook must not block the others.
       console.error(`[mibot] shutdown hook "${hook.name}" failed: ${(err as Error).message}`);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }
@@ -82,8 +99,27 @@ export function installShutdownHandlers(): void {
   };
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
-  // Normal exit path (e.g. watcher promise resolves) — best-effort synchronous hooks only.
-  process.once('beforeExit', () => { void runShutdown(); });
+
+  // An uncaught throw or rejection bypassed teardown entirely and orphaned ffmpeg and
+  // Chromium — precisely the failure this module exists to prevent. Run the same graceful
+  // path, then exit non-zero so a supervisor sees the crash.
+  const onFatal = (kind: string) => (err: unknown) => {
+    console.error(`[mibot] ${kind}: ${(err as Error)?.stack || String(err)}`);
+    void runShutdown().finally(() => process.exit(1));
+  };
+  process.once('uncaughtException', onFatal('uncaught exception'));
+  process.once('unhandledRejection', onFatal('unhandled rejection'));
+
+  // Normal exit path (e.g. `mibot join` / `mibot show` returning). `beforeExit` does NOT
+  // await a returned promise, so the process could leave before the awaited ffmpeg stop and
+  // log flush finished. Keep the loop alive across the async teardown by holding a handle
+  // until it resolves, then exit deliberately.
+  process.once('beforeExit', () => {
+    const keepAlive = setTimeout(() => {}, HOOK_TIMEOUT_MS * (hooks.length + 1));
+    void runShutdown().finally(() => {
+      clearTimeout(keepAlive);
+    });
+  });
 }
 
 /** Test hook: clear registered hooks and the one-shot latch between cases. */

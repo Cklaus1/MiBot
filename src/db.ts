@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import { isTerminalRecordingStatus, type RecordingStatus } from './status.js';
+import { isTerminalRecordingStatus, TERMINAL_RECORDING_STATUSES, type RecordingStatus } from './status.js';
 import { runMigrations } from './migrations.js';
 
 // MIBOT_DB_PATH overrides the DB location (used by the test suite to point each test file
@@ -265,6 +265,10 @@ export function updateRecording(id: number, updates: {
   warnIfNoOp('recordings', id, res.changes);
 }
 
+/** The terminal recording statuses, as a SQL literal list, so the C7 "never downgrade a
+ *  terminal outcome" rule can be expressed as a WHERE clause instead of a read-then-write. */
+const TERMINAL_RECORDING_SQL = TERMINAL_RECORDING_STATUSES.map((s) => `'${s}'`).join(', ');
+
 // ── Reads ─────────────────────────────────────────────────────────────
 
 export function getUpcomingMeetings(withinMinutes: number): Meeting[] {
@@ -333,10 +337,18 @@ export function getRecording(id: number): Recording | undefined {
  * Returns the status that ended up persisted.
  */
 export function applyRecordingStatus(id: number, desired: RecordingStatus): RecordingStatus {
-  const current = getRecording(id)?.status as RecordingStatus | undefined;
-  const next = current && isTerminalRecordingStatus(current) ? current : desired;
-  if (next !== current) updateRecording(id, { status: next });
-  return next;
+  // The guard lives IN the UPDATE. It used to be a SELECT followed by a separate UPDATE with
+  // no transaction between them — so the C7 invariant only held if nothing wrote in the gap,
+  // and this is called from a shutdown hook concurrently with the normal completion path.
+  // A single conditional statement makes the choke point actually atomic.
+  const res = getDb().prepare(
+    `UPDATE recordings SET status = ?
+     WHERE id = ? AND status NOT IN (${TERMINAL_RECORDING_SQL})`,
+  ).run(desired, id);
+  if (res.changes > 0) return desired;
+  // No row changed: either the row is already terminal (return what's actually persisted) or
+  // the id is stale (nothing to reconcile — report the caller's intent).
+  return (getRecording(id)?.status as RecordingStatus | undefined) ?? desired;
 }
 
 export function listMeetings(limit = 20): Meeting[] {

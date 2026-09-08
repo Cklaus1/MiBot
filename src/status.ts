@@ -38,12 +38,17 @@ export const MEETING_STATUS = {
 export type MeetingStatus =
   (typeof MEETING_STATUS)[keyof typeof MEETING_STATUS];
 
-const TERMINAL_RECORDING: ReadonlySet<RecordingStatus> = new Set([
+/** The terminal recording statuses, as an ordered list. Exported so the DB layer can express
+ *  the C7 "never downgrade a terminal outcome" rule as a SQL WHERE clause built from THIS
+ *  list — one source of truth, rather than a hand-copied literal that can drift. */
+export const TERMINAL_RECORDING_STATUSES: readonly RecordingStatus[] = [
   RECORDING_STATUS.DONE,
   RECORDING_STATUS.TRANSCRIBE_FAILED,
   RECORDING_STATUS.NO_AUDIO,
   RECORDING_STATUS.FAILED,
-]);
+];
+
+const TERMINAL_RECORDING: ReadonlySet<RecordingStatus> = new Set(TERMINAL_RECORDING_STATUSES);
 
 const RECORDING_TRANSITIONS: Readonly<Record<RecordingStatus, readonly RecordingStatus[]>> = {
   recording: ['recorded', 'no_audio', 'failed'],

@@ -2,8 +2,9 @@ import { joinAndRecord, detectPlatform } from './bot.js';
 import { syncCalendar } from './calendar.js';
 import {
   getUpcomingMeetings, listMeetings, listRecordings, getRecordingWithMeeting,
-  recoverStaleMeetings, sweepMissedMeetings, type Meeting,
+  recoverStaleMeetings, sweepMissedMeetings, getMeeting, type Meeting,
 } from './db.js';
+import { isTerminalMeetingStatus, type MeetingStatus } from './status.js';
 import { loadConfig, saveDefaultConfig, shouldSkipMeeting, fmtTime } from './config.js';
 import { sendCommand, parseControlResponse } from './control.js';
 import { safeParseArray, parseJoinArgs } from './cli.js';
@@ -280,12 +281,14 @@ async function startWatcher(): Promise<void> {
       const staleRecovered = recoverStaleMeetings();
       if (staleRecovered > 0) {
         console.error(`[mibot] Recovered ${staleRecovered} stale bot(s)`);
-        // Clean up activeBots set — remove IDs that were recovered (no longer running)
+        // Clean up activeBots — drop ids whose row is no longer running. This used to call
+        // listMeetings(50) INSIDE the loop and search its results: O(n) queries, and a bot
+        // whose meeting fell outside that 50-row window was never removed, permanently
+        // leaking one of the MAX_CONCURRENT_BOTS slots. Look the row up directly, and treat
+        // ANY terminal status (or a vanished row) as "no longer active", not just 'failed'.
         for (const id of activeBots) {
-          // If we just marked it failed, it's no longer active
-          const meetings = listMeetings(50);
-          const m = meetings.find(m => m.id === id);
-          if (m && m.status === 'failed') activeBots.delete(id);
+          const m = getMeeting(id);
+          if (!m || isTerminalMeetingStatus(m.status as MeetingStatus)) activeBots.delete(id);
         }
       }
 
