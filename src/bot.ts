@@ -1,3 +1,4 @@
+import { drainAudioOnce, type DrainDeps } from './audio-drain.js';
 import { type Browser as PWBrowser } from 'playwright';
 import path from 'path';
 import os from 'os';
@@ -340,7 +341,7 @@ const WEBRTC_HOOK = `
             window.__mibotRecorder = recorder;
             window.__mibotChunks = chunks;
             window.__mibotFlushedChunks = [];
-            setInterval(() => {
+            window.__mibotFlushInterval = setInterval(() => {
               if (chunks.length > 0) window.__mibotFlushedChunks.push(...chunks.splice(0));
             }, 5000);
             console.log('[mibot] WebRTC audio capture started');
@@ -379,36 +380,64 @@ const AUDIO_ELEMENT_CAPTURE = `
     window.__mibotChunks = chunks;
     window.__mibotFlushedChunks = [];
     window.__mibotAudioCtx = ctx;
-    setInterval(() => { if (chunks.length > 0) window.__mibotFlushedChunks.push(...chunks.splice(0)); }, 5000);
+    // Keep the handle: the AU3 stop-and-fold clears it so no fold can race the final drain.
+    window.__mibotFlushInterval = setInterval(() => { if (chunks.length > 0) window.__mibotFlushedChunks.push(...chunks.splice(0)); }, 5000);
     return 'capturing ' + connected + ' audio streams';
   })()
 `;
 
-const AUDIO_FLUSH_EXPR = `
+// AU8/DRAIN, camofox side. The Playwright path (webrtc-capture.ts) reads NON-destructively
+// and only removes chunks after the bytes are on disk; this path used to `splice(0)` in-page
+// BEFORE the payload had crossed the REST boundary, so any failed transfer or throwing
+// appendFileSync (ENOSPC) permanently lost that 5s window. These two expressions are the
+// read and ack halves of the same two-phase protocol; drainAudioOnce sequences them.
+const AUDIO_READ_EXPR = `
   (() => {
     const flushed = window.__mibotFlushedChunks;
-    if (!flushed || flushed.length === 0) return '';
-    const chunks = flushed.splice(0);
+    if (!flushed || flushed.length === 0) return { b64: '', count: 0 };
+    const count = flushed.length;
+    const snapshot = flushed.slice(0, count); // copy — NOT splice
     return new Promise(resolve => {
-      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const blob = new Blob(snapshot, { type: 'audio/webm' });
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result.split(',')[1] || '');
+      reader.onload = () => resolve({ b64: reader.result.split(',')[1] || '', count });
+      reader.onerror = () => resolve({ b64: '', count: 0 }); // AU7: never hang on read failure
+      reader.onabort = () => resolve({ b64: '', count: 0 });
       reader.readAsDataURL(blob);
     });
   })()
 `;
 
-const AUDIO_FINAL_FLUSH_EXPR = `
+const audioAckExpr = (count: number) => `
   (() => {
-    const flushed = window.__mibotFlushedChunks || [];
-    const chunks = window.__mibotChunks || [];
-    const all = [...flushed, ...chunks];
-    if (all.length === 0) return '';
+    const flushed = window.__mibotFlushedChunks;
+    if (flushed) flushed.splice(0, ${count});
+    return true;
+  })()
+`;
+
+// AU3 tail capture, camofox side. The old final flush just concatenated whatever happened to
+// be in the buffers — it never called requestData()/stop(), so the last partial segment (up to
+// one 5s tick) was dropped from EVERY Meet recording. Stop the recorder, await its final
+// ondataavailable, fold the tail into the flushed buffer, then drain it normally.
+const AUDIO_STOP_AND_FOLD_EXPR = `
+  (() => {
+    const w = window;
+    if (w.__mibotFlushInterval) { clearInterval(w.__mibotFlushInterval); w.__mibotFlushInterval = null; }
+    const recorder = w.__mibotRecorder;
+    const chunks = w.__mibotChunks;
+    const flushed = w.__mibotFlushedChunks;
+    if (!chunks || !flushed) return false;
     return new Promise(resolve => {
-      const blob = new Blob(all, { type: 'audio/webm' });
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result.split(',')[1] || '');
-      reader.readAsDataURL(blob);
+      const fold = () => { flushed.push(...chunks.splice(0)); resolve(true); };
+      if (recorder && recorder.state === 'recording') {
+        recorder.onstop = () => fold();
+        try { recorder.requestData(); } catch (e) {}
+        recorder.stop();
+        setTimeout(() => fold(), 3000); // safety: don't wait forever for onstop
+      } else {
+        fold();
+      }
     });
   })()
 `;
@@ -428,19 +457,46 @@ async function installCamofoxAudioCapture(page: CamofoxPage): Promise<void> {
   }, 5000);
 }
 
-/** Flush captured audio chunks to disk. Returns bytes written. */
+/** Bound the in-page read so a wedged FileReader can't stall the monitor loop (AU7). */
+const CAMOFOX_READ_TIMEOUT_MS = 15000;
+
+/** DRAIN deps for the camofox page — the read/append/ack triple drainAudioOnce sequences. */
+export function camofoxDrainDeps(page: CamofoxPage, outputPath: string): DrainDeps {
+  return {
+    readEncoded: async () => {
+      const r = await page.eval(AUDIO_READ_EXPR) as { b64?: string; count?: number } | null;
+      return { b64: r?.b64 ?? '', count: r?.count ?? 0 };
+    },
+    append: (buf) => fs.appendFileSync(outputPath, buf),
+    ack: async (count) => { await page.eval(audioAckExpr(count)); },
+    timeoutMs: CAMOFOX_READ_TIMEOUT_MS,
+  };
+}
+
+/** Flush captured audio chunks to disk via the DRAIN protocol. Returns bytes on disk. */
 async function flushCamofoxAudio(page: CamofoxPage, outputPath: string): Promise<number> {
   try {
-    const audioChunk = await page.eval(AUDIO_FLUSH_EXPR) as string;
-    if (audioChunk && audioChunk.length > 10) {
-      const buf = Buffer.from(audioChunk, 'base64');
-      fs.appendFileSync(outputPath, buf);
-      return fs.statSync(outputPath).size;
-    }
+    await drainAudioOnce(camofoxDrainDeps(page, outputPath));
   } catch (err) {
+    // append threw (e.g. ENOSPC): ack was skipped, so the page buffer still holds the
+    // window and the next tick retries it. Nothing is lost by returning here.
     log.warn(`Audio flush failed: ${(err as Error).message}`);
   }
   return fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
+}
+
+/** AU3: stop the recorder, fold in the tail, then drain what's left exactly once. */
+export async function finalizeCamofoxAudio(page: CamofoxPage, outputPath: string): Promise<boolean> {
+  try {
+    await page.eval(AUDIO_STOP_AND_FOLD_EXPR);
+  } catch { /* recorder may already be gone — still try to drain what's buffered */ }
+  try {
+    const res = await drainAudioOnce(camofoxDrainDeps(page, outputPath));
+    return res.appended;
+  } catch (err) {
+    log.warn(`Final audio drain failed: ${(err as Error).message}`);
+    return false;
+  }
 }
 
 // ── Camofox monitoring loop ───────────────────────────────────────────
@@ -694,13 +750,8 @@ async function monitorCamofoxMeeting(
 
   console.error('[mibot] Leaving meeting...');
 
-  // Final audio flush
-  try {
-    const finalAudio = await page.eval(AUDIO_FINAL_FLUSH_EXPR) as string;
-    if (finalAudio && finalAudio.length > 10) {
-      fs.appendFileSync(webrtcAudioPath, Buffer.from(finalAudio, 'base64'));
-    }
-  } catch {}
+  // Final audio drain — AU3 stop-and-drain, so the meeting's last partial segment lands.
+  await finalizeCamofoxAudio(page, webrtcAudioPath);
 
   // Copy WebRTC audio to main audio path
   if (fs.existsSync(webrtcAudioPath) && fs.statSync(webrtcAudioPath).size > 1000) {

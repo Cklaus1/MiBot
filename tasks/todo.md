@@ -170,7 +170,7 @@ Source: the four-agent holistic review. Ordered as the user listed them.
 
 - [ ] 1. Meet People-panel count — harden + make live-verifiable (cannot dial a live call here)
 - [ ] 2. CA9 M365 timezone bug + correct the false premise in opportunities.md
-- [ ] 3. Port DRAIN + tail-capture to the Meet (camofox) audio path
+- [x] 3. Port DRAIN + tail-capture to the Meet (camofox) audio path
 - [ ] 4. Three hardening fixes: guarded-UPDATE applyRecordingStatus, getMeeting(id) in
       activeBots, uncaughtException handler + per-hook shutdown timeout
 - [x] 5. Wire canTransitionMeeting into the meeting status write path
