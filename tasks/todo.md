@@ -163,3 +163,16 @@
 ## Tier gates (run at each wave boundary — build-loop.md §8)
 - [x] Full-suite regression after each wave (`npx vitest run` + tsup + tsc) — green at every Wave 5.x/6 boundary; final: 332 tests (55 files), tsc clean, tsup OK
 - [x] Smoke/integration after each wave (config/meetings/recordings boot, control cmd, playbook parse, AU1 iframe fixture) — boot smoke clean at each boundary; playbook parse + control seams now unit-covered (control-edges, playbook-hardening)
+
+## Wave 7 — post-review remediation (user-directed, 7 items)
+
+Source: the four-agent holistic review. Ordered as the user listed them.
+
+- [ ] 1. Meet People-panel count — harden + make live-verifiable (cannot dial a live call here)
+- [ ] 2. CA9 M365 timezone bug + correct the false premise in opportunities.md
+- [ ] 3. Port DRAIN + tail-capture to the Meet (camofox) audio path
+- [ ] 4. Three hardening fixes: guarded-UPDATE applyRecordingStatus, getMeeting(id) in
+      activeBots, uncaughtException handler + per-hook shutdown timeout
+- [ ] 5. Wire canTransitionMeeting into the meeting status write path
+- [ ] 6. Delete the tautological tests; add a FakePage for PlaybookEngine.run
+- [ ] 7. Pragmatic AR1 slice

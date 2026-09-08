@@ -18,6 +18,18 @@
   (AU13) for any out-of-tree caller; no in-repo call sites remain. Remove in a future cleanup · opt.
 
 ## Candidate bugs found during build (triage into a future DAG)
+- [RESOLVED] CA9 M365 timezone — **and the premise recorded here was wrong.** The old entry
+  read: "Graph returns UTC by default (no `Prefer: outlook.timezone` header is sent), so this
+  only misbehaves if ms365-cli sets a timezone preference." That is backwards. Absent the
+  `Prefer: outlook.timezone` header Graph returns the **mailbox default zone**, not UTC:
+  `start.dateTime` is a BARE wall-clock string and `start.timeZone` names its zone. Sending no
+  header is exactly the condition that triggers the bug, not the condition that avoids it.
+  Real impact: for any non-UTC mailbox every meeting was stored off by the UTC offset, fell
+  outside `getUpcomingMeetings`' window, and was retired to `missed` by `sweepMissedMeetings`
+  — silently never joined. Fixed in Wave 7: `src/tz.ts` (`toUtcIso`, DST-correct via Intl,
+  Windows→IANA table) called from both `m365ToRaw` and `googleToRaw`, so `start_time` is now
+  UTC by construction for every provider. Lesson: a deferral's stated *reason* deserves the
+  same scrutiny as a fix — this one parked a live P1 as a dormant P3 for a whole run.
 - [RESOLVED] J3 stale-tab reclaim — a Wave-6 spec-vs-todo audit found J3 (P1) had been
   silently dropped from the build DAG (standalone P1, no `→Rn` parent to cover it). Fixed in
   Wave 5.8 (per-tab owner-pid registry + `selectStaleTabs` liveness seam; camofox-stale-tabs.test.ts).
@@ -31,11 +43,6 @@
   getDb() honors `MIBOT_DB_PATH`, test/setup.ts gives each test file a temp DB. 5× clean.
 
 ## Needs-repro (deferred until a reproduction exists)
-- [BUG] CA9 `calendar.ts` M365 ingest — `event.start.timeZone` is discarded while the bare
-  `dateTime` is stored. Graph returns UTC by default (no `Prefer: outlook.timezone` header is
-  sent), so this only misbehaves if ms365-cli sets a timezone preference — unverified. Fix if
-  reproduced: convert `{dateTime,timeZone}` → UTC ISO in `m365ToRaw`. The AR7 seam gives it a
-  single home (one line in `m365ToRaw`). P3 · needs-repro. Not fixed this run (no fixture).
 - [BUG] M11 `signals.ts` Meet chat sender — the Playwright `pollChat` meet branch reads the
   sender via descendant `querySelector('[data-sender-name]')`, but Meet reportedly puts the attr
   on the ancestor (→ sender always `''`). **Dead code as shipped:** `~/.config/mibot/playbooks/

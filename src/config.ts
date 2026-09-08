@@ -245,8 +245,10 @@ export function fmtTime(dateStr: string): string {
     // Date-only: treat as midnight UTC so it renders on the intended calendar day.
     normalized = `${trimmed}T00:00:00Z`;
   } else {
-    // Bare datetime (Graph convention: UTC). Accept both 'T' and space separators,
-    // strip any fractional seconds, and append Z.
+    // Bare datetime → UTC. CA9 now normalizes every ingested start/end to an explicit UTC
+    // instant in calendar.ts (tz.ts `toUtcIso`), so this branch only sees rows written before
+    // that fix — for which UTC was already the assumed convention everywhere else. Accept both
+    // 'T' and space separators and strip fractional seconds.
     normalized = trimmed.replace(' ', 'T').replace(/\.\d+$/, '') + 'Z';
   }
 

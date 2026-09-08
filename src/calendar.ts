@@ -5,6 +5,7 @@ import {
 import { detectPlatform } from './bot.js';
 import { fmtTime } from './config.js';
 import { runCli, CliError } from './runcli.js';
+import { toUtcIso } from './tz.js';
 
 /** Hardcoded dev fallback for the gwscli binary; only used when GWS_PATH is unset. */
 const GWS_DEFAULT_PATH = '/root/projects/gwscli/target/release/gws';
@@ -268,8 +269,13 @@ export function m365ToRaw(event: Record<string, unknown>): RawCalendarEvent {
       body?.content ? decodeHtmlEntities(body.content as string) : undefined,
     ],
     // CA8: no dateTime → undefined (normalizer drops it); don't fabricate a now() start.
-    start_time: (start?.dateTime as string) || undefined,
-    end_time: (end?.dateTime as string) || undefined,
+    // CA9: Graph's dateTime is a BARE wall clock in the zone named by the sibling timeZone
+    // field. Resolve the pair to a real UTC instant HERE so exactly one convention
+    // ("start_time is UTC") holds for storage, scheduling, and display. Discarding the zone
+    // made every non-UTC mailbox join at the wrong instant — usually never, because the
+    // meeting fell outside the window and was swept to `missed`.
+    start_time: toUtcIso(start?.dateTime as string | undefined, start?.timeZone as string | undefined),
+    end_time: toUtcIso(end?.dateTime as string | undefined, end?.timeZone as string | undefined),
     organizer: (orgEa?.name as string) || undefined,
     organizer_email: (orgEa?.address as string) || undefined,
     location: loc?.displayName as string | undefined,
@@ -302,8 +308,11 @@ export function googleToRaw(event: Record<string, any>): RawCalendarEvent {
     urlCandidates: candidates,
     // CA8: only a real dateTime counts; all-day events (start.date only) get undefined and are
     // dropped by the normalizer instead of being scheduled for a midnight join.
-    start_time: event.start?.dateTime || undefined,
-    end_time: event.end?.dateTime || undefined,
+    // CA9: Google always carries an explicit offset, so this only re-spells the same instant
+    // as UTC — but it puts both providers on one convention, which is what lets the CA4
+    // cross-provider dedup key (`join_url + start_time`) actually match.
+    start_time: toUtcIso(event.start?.dateTime, event.start?.timeZone),
+    end_time: toUtcIso(event.end?.dateTime, event.end?.timeZone),
     organizer: event.organizer?.displayName || undefined,
     organizer_email: event.organizer?.email || undefined,
     location: event.location || undefined,
