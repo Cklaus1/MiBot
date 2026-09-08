@@ -500,6 +500,11 @@ export class PlaybookEngine {
     const frames = this.getFrames(step.frame);
     const deadlineMs = step.timeout || 10000;
 
+    // Build once up front: a step with no targeting throws a clear "no targeting" error here.
+    // Inside the poll that throw is swallowed by the .catch(() => false), so such a step used
+    // to burn its whole timeout and then report a misleading "(element) not found".
+    this.buildLocator(frames[0], step);
+
     const match = await pollForFirst(
       frames,
       async (frame) =>
