@@ -18,54 +18,158 @@
  * what makes DST correct (the same zone is UTC-8 in January and UTC-7 in July).
  */
 
-/** Windows zone names Graph emits → IANA. Covers the zones a real mailbox is likely to use;
- *  anything unlisted falls through to `undefined` and is handled as "unknown" by the caller
- *  rather than guessed at. */
+/**
+ * Windows zone names Graph emits → IANA: every CLDR windowsZones.xml mapping for territory
+ * "001" (the canonical zone for each Windows name), keys lowercased. Generated, not hand-picked:
+ * the first version covered 44 "likely" zones, and every mailbox in an unlisted one (Brisbane,
+ * Bangkok, Adelaide, Riyadh, Karachi, Tehran, Santiago, ...) silently fell back to UTC and got
+ * the exact CA9 bug back. CLDR keeps some legacy aliases (Asia/Calcutta, America/Buenos_Aires);
+ * ICU resolves them identically. Overrides: 'utc' → 'UTC' (resolveZone short-circuits on that
+ * exact string) and Graph's 'tzone://Microsoft/Utc'.
+ *
+ * Regenerate from https://github.com/unicode-org/cldr/blob/main/common/supplemental/windowsZones.xml
+ */
 const WINDOWS_TO_IANA: Record<string, string> = {
+  'dateline standard time': 'Etc/GMT+12',
+  'utc-11': 'Etc/GMT+11',
+  'aleutian standard time': 'America/Adak',
+  'hawaiian standard time': 'Pacific/Honolulu',
+  'marquesas standard time': 'Pacific/Marquesas',
+  'alaskan standard time': 'America/Anchorage',
+  'utc-09': 'Etc/GMT+9',
+  'pacific standard time (mexico)': 'America/Tijuana',
+  'utc-08': 'Etc/GMT+8',
+  'pacific standard time': 'America/Los_Angeles',
+  'us mountain standard time': 'America/Phoenix',
+  'mountain standard time (mexico)': 'America/Mazatlan',
+  'mountain standard time': 'America/Denver',
+  'yukon standard time': 'America/Whitehorse',
+  'central america standard time': 'America/Guatemala',
+  'central standard time': 'America/Chicago',
+  'easter island standard time': 'Pacific/Easter',
+  'central standard time (mexico)': 'America/Mexico_City',
+  'canada central standard time': 'America/Regina',
+  'sa pacific standard time': 'America/Bogota',
+  'eastern standard time (mexico)': 'America/Cancun',
+  'eastern standard time': 'America/New_York',
+  'haiti standard time': 'America/Port-au-Prince',
+  'cuba standard time': 'America/Havana',
+  'us eastern standard time': 'America/Indianapolis',
+  'turks and caicos standard time': 'America/Grand_Turk',
+  'paraguay standard time': 'America/Asuncion',
+  'atlantic standard time': 'America/Halifax',
+  'venezuela standard time': 'America/Caracas',
+  'central brazilian standard time': 'America/Cuiaba',
+  'sa western standard time': 'America/La_Paz',
+  'pacific sa standard time': 'America/Santiago',
+  'newfoundland standard time': 'America/St_Johns',
+  'tocantins standard time': 'America/Araguaina',
+  'e. south america standard time': 'America/Sao_Paulo',
+  'sa eastern standard time': 'America/Cayenne',
+  'argentina standard time': 'America/Buenos_Aires',
+  'greenland standard time': 'America/Godthab',
+  'montevideo standard time': 'America/Montevideo',
+  'magallanes standard time': 'America/Punta_Arenas',
+  'saint pierre standard time': 'America/Miquelon',
+  'bahia standard time': 'America/Bahia',
+  'utc-02': 'Etc/GMT+2',
+  'azores standard time': 'Atlantic/Azores',
+  'cape verde standard time': 'Atlantic/Cape_Verde',
   'utc': 'UTC',
   'gmt standard time': 'Europe/London',
   'greenwich standard time': 'Atlantic/Reykjavik',
+  'sao tome standard time': 'Africa/Sao_Tome',
+  'morocco standard time': 'Africa/Casablanca',
   'w. europe standard time': 'Europe/Berlin',
   'central europe standard time': 'Europe/Budapest',
-  'central european standard time': 'Europe/Warsaw',
   'romance standard time': 'Europe/Paris',
+  'central european standard time': 'Europe/Warsaw',
   'w. central africa standard time': 'Africa/Lagos',
-  'e. europe standard time': 'Europe/Chisinau',
-  'fle standard time': 'Europe/Kiev',
+  'jordan standard time': 'Asia/Amman',
   'gtb standard time': 'Europe/Bucharest',
-  'israel standard time': 'Asia/Jerusalem',
-  'russian standard time': 'Europe/Moscow',
-  'arabian standard time': 'Asia/Dubai',
-  'india standard time': 'Asia/Kolkata',
-  'china standard time': 'Asia/Shanghai',
-  'singapore standard time': 'Asia/Singapore',
-  'tokyo standard time': 'Asia/Tokyo',
-  'korea standard time': 'Asia/Seoul',
-  'aus eastern standard time': 'Australia/Sydney',
-  'aus central standard time': 'Australia/Darwin',
-  'w. australia standard time': 'Australia/Perth',
-  'new zealand standard time': 'Pacific/Auckland',
-  'hawaiian standard time': 'Pacific/Honolulu',
-  'alaskan standard time': 'America/Anchorage',
-  'pacific standard time': 'America/Los_Angeles',
-  'pacific standard time (mexico)': 'America/Tijuana',
-  'mountain standard time': 'America/Denver',
-  'us mountain standard time': 'America/Phoenix',
-  'central standard time': 'America/Chicago',
-  'canada central standard time': 'America/Regina',
-  'central standard time (mexico)': 'America/Mexico_City',
-  'eastern standard time': 'America/New_York',
-  'us eastern standard time': 'America/Indiana/Indianapolis',
-  'atlantic standard time': 'America/Halifax',
-  'newfoundland standard time': 'America/St_Johns',
-  'e. south america standard time': 'America/Sao_Paulo',
-  'argentina standard time': 'America/Argentina/Buenos_Aires',
-  'sa pacific standard time': 'America/Bogota',
-  'sa western standard time': 'America/La_Paz',
-  'south africa standard time': 'Africa/Johannesburg',
-  'e. africa standard time': 'Africa/Nairobi',
+  'middle east standard time': 'Asia/Beirut',
   'egypt standard time': 'Africa/Cairo',
+  'e. europe standard time': 'Europe/Chisinau',
+  'syria standard time': 'Asia/Damascus',
+  'west bank standard time': 'Asia/Hebron',
+  'south africa standard time': 'Africa/Johannesburg',
+  'fle standard time': 'Europe/Kiev',
+  'israel standard time': 'Asia/Jerusalem',
+  'south sudan standard time': 'Africa/Juba',
+  'kaliningrad standard time': 'Europe/Kaliningrad',
+  'sudan standard time': 'Africa/Khartoum',
+  'libya standard time': 'Africa/Tripoli',
+  'namibia standard time': 'Africa/Windhoek',
+  'arabic standard time': 'Asia/Baghdad',
   'turkey standard time': 'Europe/Istanbul',
+  'arab standard time': 'Asia/Riyadh',
+  'belarus standard time': 'Europe/Minsk',
+  'russian standard time': 'Europe/Moscow',
+  'e. africa standard time': 'Africa/Nairobi',
+  'iran standard time': 'Asia/Tehran',
+  'arabian standard time': 'Asia/Dubai',
+  'astrakhan standard time': 'Europe/Astrakhan',
+  'azerbaijan standard time': 'Asia/Baku',
+  'russia time zone 3': 'Europe/Samara',
+  'mauritius standard time': 'Indian/Mauritius',
+  'saratov standard time': 'Europe/Saratov',
+  'georgian standard time': 'Asia/Tbilisi',
+  'volgograd standard time': 'Europe/Volgograd',
+  'caucasus standard time': 'Asia/Yerevan',
+  'afghanistan standard time': 'Asia/Kabul',
+  'west asia standard time': 'Asia/Tashkent',
+  'ekaterinburg standard time': 'Asia/Yekaterinburg',
+  'pakistan standard time': 'Asia/Karachi',
+  'qyzylorda standard time': 'Asia/Qyzylorda',
+  'india standard time': 'Asia/Calcutta',
+  'sri lanka standard time': 'Asia/Colombo',
+  'nepal standard time': 'Asia/Katmandu',
+  'central asia standard time': 'Asia/Bishkek',
+  'bangladesh standard time': 'Asia/Dhaka',
+  'omsk standard time': 'Asia/Omsk',
+  'myanmar standard time': 'Asia/Rangoon',
+  'se asia standard time': 'Asia/Bangkok',
+  'altai standard time': 'Asia/Barnaul',
+  'w. mongolia standard time': 'Asia/Hovd',
+  'north asia standard time': 'Asia/Krasnoyarsk',
+  'n. central asia standard time': 'Asia/Novosibirsk',
+  'tomsk standard time': 'Asia/Tomsk',
+  'china standard time': 'Asia/Shanghai',
+  'north asia east standard time': 'Asia/Irkutsk',
+  'singapore standard time': 'Asia/Singapore',
+  'w. australia standard time': 'Australia/Perth',
+  'taipei standard time': 'Asia/Taipei',
+  'ulaanbaatar standard time': 'Asia/Ulaanbaatar',
+  'aus central w. standard time': 'Australia/Eucla',
+  'transbaikal standard time': 'Asia/Chita',
+  'tokyo standard time': 'Asia/Tokyo',
+  'north korea standard time': 'Asia/Pyongyang',
+  'korea standard time': 'Asia/Seoul',
+  'yakutsk standard time': 'Asia/Yakutsk',
+  'cen. australia standard time': 'Australia/Adelaide',
+  'aus central standard time': 'Australia/Darwin',
+  'e. australia standard time': 'Australia/Brisbane',
+  'aus eastern standard time': 'Australia/Sydney',
+  'west pacific standard time': 'Pacific/Port_Moresby',
+  'tasmania standard time': 'Australia/Hobart',
+  'vladivostok standard time': 'Asia/Vladivostok',
+  'lord howe standard time': 'Australia/Lord_Howe',
+  'bougainville standard time': 'Pacific/Bougainville',
+  'russia time zone 10': 'Asia/Srednekolymsk',
+  'magadan standard time': 'Asia/Magadan',
+  'norfolk standard time': 'Pacific/Norfolk',
+  'sakhalin standard time': 'Asia/Sakhalin',
+  'central pacific standard time': 'Pacific/Guadalcanal',
+  'russia time zone 11': 'Asia/Kamchatka',
+  'new zealand standard time': 'Pacific/Auckland',
+  'utc+12': 'Etc/GMT-12',
+  'fiji standard time': 'Pacific/Fiji',
+  'chatham islands standard time': 'Pacific/Chatham',
+  'utc+13': 'Etc/GMT-13',
+  'tonga standard time': 'Pacific/Tongatapu',
+  'samoa standard time': 'Pacific/Apia',
+  'line islands standard time': 'Pacific/Kiritimati',
+  'tzone://microsoft/utc': 'UTC',
 };
 
 /** Translate a Windows/Graph zone name to IANA. Returns undefined if it isn't one we know. */
@@ -101,6 +205,25 @@ export function resolveZone(tz: string | undefined): string | undefined {
   if (mapped) return mapped;
   // A bare IANA-ish name with no slash (e.g. "UTC") is still valid to Intl.
   return isIana(trimmed) ? trimmed : undefined;
+}
+
+const warnedZones = new Set<string>();
+
+/**
+ * A named zone we can't resolve means every time from that mailbox is being read as UTC — hours
+ * off, and swept to 'missed' without a trace. That must be visible. Once per zone name, since
+ * the calendar sync runs every poll. (Graph's 'tzone://Microsoft/Custom' lands here: a custom
+ * zone has no IANA equivalent.)
+ */
+function warnUnknownZone(tz: string): void {
+  if (warnedZones.has(tz)) return;
+  warnedZones.add(tz);
+  console.error(`[mibot] WARN: unknown calendar timezone "${tz}" — treating its times as UTC; meetings from this calendar may be scheduled at the wrong time`);
+}
+
+/** Test hook: forget which unknown zones were already reported. */
+export function __resetZoneWarningsForTest(): void {
+  warnedZones.clear();
 }
 
 /** The offset, in minutes, that `zone` was at the given UTC instant (east of UTC is positive). */
@@ -164,6 +287,7 @@ export function toUtcIso(dateTime: string | undefined, timeZone?: string): strin
   if (isNaN(asUtc.getTime())) return undefined;
 
   const zone = resolveZone(timeZone);
+  if (!zone && timeZone && timeZone.trim()) warnUnknownZone(timeZone.trim());
   if (!zone || zone === 'UTC') return asUtc.toISOString();
 
   return new Date(wallClockToUtcMs(asUtc.getTime(), zone)).toISOString();
