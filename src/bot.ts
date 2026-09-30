@@ -5,7 +5,7 @@ import os from 'os';
 import fs from 'fs';
 import {
   getOrCreateMeeting, insertRecording, updateMeetingStatus, updateRecording,
-  updateMeeting, getMeeting, updateHeartbeat, transaction, applyRecordingStatus,
+  updateMeeting, getMeeting, updateHeartbeat, transaction, applyRecordingStatus, handleJoinFailure,
 } from './db.js';
 import { RECORDING_STATUS } from './status.js';
 import { loadConfig, isBot } from './config.js';
@@ -324,7 +324,12 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
 
   } catch (err) {
     log.error(`Bot error: ${(err as Error).message}`, { meetingId: meeting.id });
-    updateMeetingStatus(meeting.id, 'failed');
+    // A failed JOIN of a calendar meeting is retried with backoff until the meeting ends; any
+    // other failure (after in_call, manual join, meeting over) is terminal as before.
+    const plan = handleJoinFailure(meeting.id);
+    if (plan.retry) {
+      console.error(`[mibot] Join attempt ${plan.attempt} failed — retrying in ${Math.round(plan.delayMs / 60000)} min (until the meeting ends)`);
+    }
     // C7: never downgrade a recording that already reached a terminal outcome
     // (done / transcribe_failed / no_audio) just because a later step threw.
     applyRecordingStatus(recording.id, RECORDING_STATUS.FAILED);

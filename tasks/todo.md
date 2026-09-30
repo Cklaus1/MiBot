@@ -186,7 +186,7 @@ Source: the four-agent holistic review. Ordered as the user listed them.
 - [x] 5. P1: Meet late joiners recorded after the audio-element fallback. `327176a`
 
 ### Open from the review (not yet fixed)
-- [ ] P1: one failed join is terminal — no retry while the meeting is still running (needs a retry-policy decision).
+- [x] P1: one failed join is terminal — now retried with backoff (1/2/4/5 min) until the meeting's end time (user decision).
 - [ ] P2: a false stale-kill (host suspend >2min) is now permanent under the transition guard; the bot's participants/timeline are refused.
 - [ ] P2: `onlyOrganized` / `minAttendees` validated but never read.
 - [ ] P2: `MIBOT_TIMEZONE` env not validated → `fmtTime` throws and cuts syncs short.
@@ -201,3 +201,8 @@ Source: the four-agent holistic review. Ordered as the user listed them.
 ### Review
 Verified end to end on a real recording: meeting 144's sidecar (233.6s speech) is now
 promoted over its -91 dB main file. 408 → 444 tests; typecheck and build clean.
+
+### Data note (not fixed — production data, needs operator decision)
+- 24 `scheduled` rows in ~/.config/mibot/mibot.db have `start_time = 't'` (ids 946, 948, 959, ...):
+  junk, likely from tests that wrote to the real DB before MIBOT_DB_PATH isolation. Unjoinable
+  and unsweepable under both the old and new rules. Safe to delete; left alone pending approval.

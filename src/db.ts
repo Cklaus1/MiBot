@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { planJoinRetry, DEFAULT_MEETING_MINUTES, type JoinRetryPlan } from './join-retry.js';
 import {
   isTerminalRecordingStatus, TERMINAL_RECORDING_STATUSES, isKnownMeetingStatus,
   legalPredecessorsOf, type RecordingStatus, type MeetingStatus,
@@ -88,6 +89,10 @@ export interface Meeting {
   participants: string | null;   // JSON
   speaker_timeline: string | null; // JSON
   heartbeat: string | null;
+  /** Failed join attempts so far (join retry). */
+  join_attempts: number | null;
+  /** A retrying meeting isn't joinable before this instant (backoff). */
+  next_join_at: string | null;
   status: string;
   created_at: string;
 }
@@ -264,7 +269,7 @@ export function sweepMissedMeetings(): number {
   return db.prepare(`
     UPDATE meetings SET status = 'missed'
     WHERE status = 'scheduled'
-      AND datetime(start_time) < datetime('now', '-30 minutes')
+      AND ${EFFECTIVE_END_SQL} <= datetime('now')
   `).run().changes;
 }
 
@@ -300,14 +305,47 @@ const TERMINAL_RECORDING_SQL = TERMINAL_RECORDING_STATUSES.map((s) => `'${s}'`).
 
 // ── Reads ─────────────────────────────────────────────────────────────
 
+/**
+ * When a meeting is over, in SQL: its end_time, or start + DEFAULT_MEETING_MINUTES without one.
+ * Shared by the scheduler and the missed sweep so "joinable" and "missed" can never disagree —
+ * they used to share a hardcoded 30-minutes-after-start cutoff, which is also what made a
+ * meeting unretryable half an hour in no matter how long it ran.
+ */
+const EFFECTIVE_END_SQL =
+  `datetime(COALESCE(end_time, datetime(start_time, '+${DEFAULT_MEETING_MINUTES} minutes')))`;
+
 export function getUpcomingMeetings(withinMinutes: number): Meeting[] {
   return getDb().prepare(`
     SELECT * FROM meetings
     WHERE status = 'scheduled'
       AND datetime(start_time) <= datetime('now', '+' || ? || ' minutes')
-      AND datetime(start_time) >= datetime('now', '-30 minutes')
+      AND ${EFFECTIVE_END_SQL} > datetime('now')
+      AND (next_join_at IS NULL OR datetime(next_join_at) <= datetime('now'))
     ORDER BY start_time
   `).all(withinMinutes) as Meeting[];
+}
+
+/**
+ * A bot for this meeting threw. Decide (planJoinRetry) whether it was a JOIN failure worth
+ * retrying, and apply it: back to 'scheduled' with an attempt counted and a backoff, or 'failed'.
+ * The retry write is guarded on status = 'joining' (raw SQL, like cancel/revive): if the row
+ * moved on in the meantime, the stale plan is discarded and it's failed through the normal guard.
+ */
+export function handleJoinFailure(id: number, nowMs: number = Date.now()): JoinRetryPlan {
+  const row = getMeeting(id);
+  if (!row) return { retry: false, reason: 'not-a-join-failure' };
+  const plan = planJoinRetry(row, nowMs);
+  if (plan.retry) {
+    const res = getDb().prepare(
+      `UPDATE meetings
+         SET status = 'scheduled', join_attempts = COALESCE(join_attempts, 0) + 1,
+             next_join_at = ?, heartbeat = ?
+       WHERE id = ? AND status = 'joining'`,
+    ).run(plan.nextJoinAt, new Date(nowMs).toISOString(), id);
+    if (res.changes > 0) return plan;
+  }
+  updateMeetingStatus(id, 'failed');
+  return plan.retry ? { retry: false, reason: 'not-a-join-failure' } : plan;
 }
 
 export function getMeetingByEventId(eventId: string): Meeting | undefined {

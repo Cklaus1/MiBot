@@ -113,6 +113,14 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 4,
+    name: 'join retry: attempt counter + backoff timestamp',
+    up: (db) => {
+      addColumnIfMissing(db, 'meetings', 'join_attempts', 'INTEGER DEFAULT 0');
+      addColumnIfMissing(db, 'meetings', 'next_join_at', 'TEXT');
+    },
+  },
 ];
 
 /**
