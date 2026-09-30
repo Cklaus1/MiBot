@@ -202,7 +202,8 @@ Source: the four-agent holistic review. Ordered as the user listed them.
 Verified end to end on a real recording: meeting 144's sidecar (233.6s speech) is now
 promoted over its -91 dB main file. 408 → 444 tests; typecheck and build clean.
 
-### Data note (not fixed — production data, needs operator decision)
-- 24 `scheduled` rows in ~/.config/mibot/mibot.db have `start_time = 't'` (ids 946, 948, 959, ...):
-  junk, likely from tests that wrote to the real DB before MIBOT_DB_PATH isolation. Unjoinable
-  and unsweepable under both the old and new rules. Safe to delete; left alone pending approval.
+### Data cleanup (done 2026-09-30, user-approved)
+- Deleted 24 junk `scheduled` rows with `start_time = 't'` (titles R/W, urls https://y|z, event ids
+  race-*, created 2026-07-29 — a race test that wrote to the real DB before MIBOT_DB_PATH
+  isolation). No child recordings. Backup: ~/.config/mibot/mibot.db.bak-20260930-112213-before-junk-delete
+  (integrity ok, 1090 rows). DB after: 1066 rows, integrity ok.
