@@ -384,7 +384,7 @@ const WEBRTC_HOOK = `
   }
 `;
 
-const AUDIO_ELEMENT_CAPTURE = `
+export const AUDIO_ELEMENT_CAPTURE = `
   (() => {
     if (window.__mibotAudioCapture) return 'already running';
     if (window.__mibotRecorder) return 'rtc hook active';
@@ -409,6 +409,12 @@ const AUDIO_ELEMENT_CAPTURE = `
     window.__mibotChunks = chunks;
     window.__mibotFlushedChunks = [];
     window.__mibotAudioCtx = ctx;
+    // Fix 5: publish the destination too. The WebRTC hook's track handler sees __mibotAudioCtx
+    // already set and skips its own setup, then connects each new track to __mibotDest. With
+    // only the context published, that was connect(undefined) -> TypeError, so everyone who
+    // joined after this fallback fired was silently never recorded.
+    window.__mibotDest = dest;
+    window.__mibotSources = [];
     // Keep the handle: the AU3 stop-and-fold clears it so no fold can race the final drain.
     window.__mibotFlushInterval = setInterval(() => { if (chunks.length > 0) window.__mibotFlushedChunks.push(...chunks.splice(0)); }, 5000);
     return 'capturing ' + connected + ' audio streams';

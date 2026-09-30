@@ -437,6 +437,53 @@ export async function awaitCamofoxReady(
   return match !== null;
 }
 
+/**
+ * The Meet WebRTC hook, injected as a camofox initScript so it runs BEFORE page content on every
+ * navigation. Each incoming audio track is connected into one shared destination
+ * (`__mibotDest`) that a single MediaRecorder records — so participants who join later are
+ * captured by the recorder that is already running. Exported so the in-page logic can be
+ * executed under test rather than only string-matched.
+ */
+export const CAMOFOX_WEBRTC_HOOK = `
+    if (!window.__mibotHooked) {
+      window.__mibotHooked = true;
+      const origRTC = window.RTCPeerConnection;
+      window.RTCPeerConnection = function(...args) {
+        const pc = new origRTC(...args);
+        pc.addEventListener('track', (event) => {
+          if (event.track.kind === 'audio') {
+            if (!window.__mibotAudioCtx) {
+              window.__mibotAudioCtx = new AudioContext();
+              window.__mibotDest = window.__mibotAudioCtx.createMediaStreamDestination();
+              window.__mibotSources = [];
+            }
+            const stream = new MediaStream([event.track]);
+            const source = window.__mibotAudioCtx.createMediaStreamSource(stream);
+            source.connect(window.__mibotDest);
+            window.__mibotSources.push(source);
+            if (!window.__mibotRecorder) {
+              const recorder = new MediaRecorder(window.__mibotDest.stream, {
+                mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 64000
+              });
+              const chunks = [];
+              recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+              recorder.start(1000);
+              window.__mibotRecorder = recorder;
+              window.__mibotChunks = chunks;
+              window.__mibotFlushedChunks = [];
+              // Stored so the AU3 stop-and-fold can clear it and no fold races the final drain.
+              window.__mibotFlushInterval = setInterval(() => {
+                if (chunks.length > 0) window.__mibotFlushedChunks.push(...chunks.splice(0));
+              }, 5000);
+            }
+          }
+        });
+        return pc;
+      };
+      window.RTCPeerConnection.prototype = origRTC.prototype;
+    }
+  `;
+
 /** Launch a camofox browser and navigate to the meeting URL. */
 export async function launchCamofox(url: string): Promise<CamofoxPage> {
   // Verify camofox is running
@@ -466,49 +513,10 @@ export async function launchCamofox(url: string): Promise<CamofoxPage> {
     }
   } catch {}
 
-  // WebRTC hook as initScript — runs BEFORE page content on every navigation
-  const webrtcHook = `
-    if (!window.__mibotHooked) {
-      window.__mibotHooked = true;
-      const origRTC = window.RTCPeerConnection;
-      window.RTCPeerConnection = function(...args) {
-        const pc = new origRTC(...args);
-        pc.addEventListener('track', (event) => {
-          if (event.track.kind === 'audio') {
-            if (!window.__mibotAudioCtx) {
-              window.__mibotAudioCtx = new AudioContext();
-              window.__mibotDest = window.__mibotAudioCtx.createMediaStreamDestination();
-              window.__mibotSources = [];
-            }
-            const stream = new MediaStream([event.track]);
-            const source = window.__mibotAudioCtx.createMediaStreamSource(stream);
-            source.connect(window.__mibotDest);
-            window.__mibotSources.push(source);
-            if (!window.__mibotRecorder) {
-              const recorder = new MediaRecorder(window.__mibotDest.stream, {
-                mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 64000
-              });
-              const chunks = [];
-              recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-              recorder.start(1000);
-              window.__mibotRecorder = recorder;
-              window.__mibotChunks = chunks;
-              window.__mibotFlushedChunks = [];
-              setInterval(() => {
-                if (chunks.length > 0) window.__mibotFlushedChunks.push(...chunks.splice(0));
-              }, 5000);
-            }
-          }
-        });
-        return pc;
-      };
-      window.RTCPeerConnection.prototype = origRTC.prototype;
-    }
-  `;
 
   const page = new CamofoxPage();
   // Create tab with initScript (WebRTC hook runs before any page JS)
-  await page.createTab(url, webrtcHook);
+  await page.createTab(url, CAMOFOX_WEBRTC_HOOK);
   // J20: wait on a real readiness signal (snapshot answers) instead of a blind 8s sleep.
   const ready = await awaitCamofoxReady(page, { deadlineMs: 30000, intervalMs: 1000 });
   if (!ready) {
