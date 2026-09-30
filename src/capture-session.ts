@@ -1,6 +1,6 @@
 import type { Page } from 'playwright';
 import fs from 'fs';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import { startRecording, stopRecording } from './recorder.js';
 import { flushAudioToDisk, finalizeAudioDrain } from './webrtc-capture.js';
 
@@ -31,8 +31,9 @@ export interface CaptureSessionDeps {
   finalFlush?: (webrtcAudioPath: string) => Promise<boolean>;
   setInterval: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
   clearInterval: (h: ReturnType<typeof setInterval>) => void;
-  /** Decoded duration of a path in seconds, or null if missing/corrupt/unmeasurable (AU10). */
-  duration: (p: string) => number | null;
+  /** Seconds of USABLE audio at a path — null if missing, corrupt, unmeasurable, or silent
+   *  (AU10). May be async: the production probe decodes the whole file. */
+  duration: (p: string) => number | null | Promise<number | null>;
   copyFile: (src: string, dest: string) => void;
   flushIntervalMs?: number;
 }
@@ -107,29 +108,85 @@ export class CaptureSession {
     try { await finalFlush(this.webrtcAudioPath); } catch {}
 
     // AU10: prefer the webrtc capture only when it is genuinely the longer recording.
-    const webrtcSec = this.deps.duration(this.webrtcAudioPath);
-    const ffmpegSec = this.deps.duration(this.audioPath);
+    const webrtcSec = await this.deps.duration(this.webrtcAudioPath);
+    const ffmpegSec = await this.deps.duration(this.audioPath);
     if (shouldPreferWebrtc({ webrtcSec, ffmpegSec })) {
       this.deps.copyFile(this.webrtcAudioPath, this.audioPath);
     }
   }
 }
 
-/** Decoded duration in seconds via ffprobe, or null if missing/corrupt/unmeasurable (AU10). */
-export function probeDurationSec(p: string): number | null {
-  if (!fs.existsSync(p)) return null;
-  try {
-    const out = execFileSync('ffprobe', [
-      '-v', 'error',
-      '-show_entries', 'format=duration',
-      '-of', 'default=noprint_wrappers=1:nokey=1',
-      p,
-    ], { encoding: 'utf8', timeout: 10000 }).trim();
-    const sec = parseFloat(out);
-    return Number.isFinite(sec) ? sec : null;
-  } catch {
-    return null; // ffprobe missing or file undecodable
-  }
+export interface AudioProbe {
+  /** Decoded length in seconds. */
+  sec: number;
+  /** Peak level from volumedetect, or null if the filter reported nothing. */
+  maxVolumeDb: number | null;
+}
+
+/**
+ * Peak below this is treated as no audio. Digital silence (headless Chrome's null pulse sink)
+ * measures -91 dB; real speech peaks around -30..0 dB. -70 leaves a wide margin for a quiet room.
+ */
+export const SILENCE_CEILING_DB = -70;
+
+/** Pure parser for `ffmpeg -i f -af volumedetect -f null -` stderr. Null if nothing decoded. */
+export function parseDecodeStats(stderr: string): AudioProbe | null {
+  const times = [...stderr.matchAll(/time=(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/g)];
+  if (times.length === 0) return null;
+  const [, h, m, sec] = times[times.length - 1];
+  const vol = /max_volume:\s*(-?[\d.]+|-inf) dB/.exec(stderr);
+  return {
+    sec: Number(h) * 3600 + Number(m) * 60 + parseFloat(sec),
+    maxVolumeDb: vol ? (vol[1] === '-inf' ? -Infinity : parseFloat(vol[1])) : null,
+  };
+}
+
+/** Seconds of usable audio from a probe: null when nothing decoded, zero-length, or silent. */
+export function usableDurationSec(probe: AudioProbe | null): number | null {
+  if (!probe || probe.sec <= 0) return null;
+  if (probe.maxVolumeDb !== null && probe.maxVolumeDb < SILENCE_CEILING_DB) return null;
+  return probe.sec;
+}
+
+/**
+ * Decode the whole file once and measure its real length and peak level.
+ *
+ * This used to read `format=duration` with ffprobe, but MediaRecorder writes live-mode webm with
+ * no Duration element, so ffprobe printed `N/A` for EVERY WebRTC capture. The probe returned
+ * null, shouldPreferWebrtc never fired, and on the default headless path each Teams/Zoom meeting
+ * sent ffmpeg's -91 dB null-sink recording to transcription while the real audio sat unused in
+ * the -webrtc sidecar. Decoding is the only reliable length for live webm, and volumedetect in
+ * the same pass catches the silent file.
+ *
+ * Async on purpose: ~10s per 20 min of audio, so an 8h meeting decodes for minutes. A sync call
+ * would block the heartbeat past the 2-minute stale threshold and let recovery kill the bot.
+ * Resolves null if the file is missing or ffmpeg can't run/decode it.
+ */
+export function probeAudio(p: string): Promise<AudioProbe | null> {
+  if (!fs.existsSync(p)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile('ffmpeg', ['-hide_banner', '-nostdin', '-i', p, '-af', 'volumedetect', '-f', 'null', '-'],
+      { encoding: 'utf8', timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 },
+      // A decode error mid-file still yields stats for what did decode, so parse regardless.
+      (_err, _stdout, stderr) => resolve(parseDecodeStats(stderr || '')));
+  });
+}
+
+/** Seconds of usable (decodable, non-silent) audio, or null (AU10). */
+export async function probeDurationSec(p: string): Promise<number | null> {
+  return usableDurationSec(await probeAudio(p));
+}
+
+/**
+ * Should this recording go to transcription? Silent or empty → no. If the probe itself can't
+ * run (ffmpeg missing, timeout), fall back to the old size check rather than start marking real
+ * recordings no_audio because of a tooling problem.
+ */
+export async function hasUsableAudio(p: string): Promise<boolean> {
+  if (!fs.existsSync(p)) return false;
+  const probe = await probeAudio(p);
+  if (probe === null) return fs.statSync(p).size > 1000;
+  return usableDurationSec(probe) !== null;
 }
 
 /** Production factory: a CaptureSession wired to the real recorder/webrtc/fs for a given page. */

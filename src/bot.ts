@@ -19,7 +19,7 @@ import { RosterTracker } from './roster.js';
 import { LeavePolicy } from './leave-policy.js';
 import { isSimilarImage } from './image-similarity.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
-import { type CaptureSession, webrtcAudioPathFor } from './capture-session.js';
+import { type CaptureSession, webrtcAudioPathFor, hasUsableAudio } from './capture-session.js';
 import { transcribe } from './transcribe.js';
 import { launchCamofox, type CamofoxPage } from './camofox.js';
 import { loadSelectors } from './selectors.js';
@@ -186,7 +186,8 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       await camofoxPage.close();
       camofoxPage = null;
 
-      const haveAudio = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000;
+      // Decode-based, not byte-size: a silent null-sink recording is large but has no audio.
+      const haveAudio = await hasUsableAudio(audioPath);
 
       // Wrap DB updates in transaction to prevent partial writes
       transaction(() => {
@@ -260,7 +261,8 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       await stopAudioCapture(captureSession);
       captureSession = null; // stopped cleanly; finally's safety-net stop is now a no-op
 
-      const haveAudio = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000;
+      // Decode-based, not byte-size: a silent null-sink recording is large but has no audio.
+      const haveAudio = await hasUsableAudio(audioPath);
 
       // Wrap DB updates in transaction to prevent partial writes
       transaction(() => {
