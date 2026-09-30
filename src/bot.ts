@@ -67,7 +67,10 @@ const PEOPLE_COUNT_PATTERNS: RegExp[] = [
   /button "People" \[.*?\]: "(\d+)"/,        // original: value rendered after the ref
   /button "People \((\d+)\)"/,               // count inlined in the label
   /button "(\d+) (?:participants?|people)"/i, // aria-label carries the count
-  /button "People"[^\n]*?\b(\d+)\b/,        // any digits on the People button's line
+  // Deliberately NO "any digits on the People line" catch-all: it read attribute digits
+  // (`[nth=1]`, `[level=2]`) as the count, and a count of 1 means 0 humans — a false
+  // alone-exit ~40s into a real meeting. An unparsed count is the safe failure (the loop keeps
+  // assuming a human is present and the miss warning fires); a wrong count is not.
 ];
 
 /**

@@ -99,8 +99,17 @@ describe('parsePeopleCount tolerance (item 1)', () => {
     ['aria-label with participants', 'button "5 participants" [ref=e9]', 5],
     ['aria-label singular', 'button "1 participant" [ref=e9]', 1],
     ['aria-label people wording', 'button "7 people" [ref=e9]', 7],
-    ['digits elsewhere on the People line', 'button "People" [ref=e12] badge=2', 2],
   ];
+
+  // Regression: a catch-all pattern read snapshot ATTRIBUTE digits as the count. A count of 1
+  // is 0 humans, so these produced a false alone-exit on a real meeting. Unknown must stay null.
+  for (const snap of [
+    'button "People" [e7] [nth=1]',
+    'button "People" [level=2]',
+    'button "People" [ref=e12] badge=2',
+  ]) {
+    it(`does not read attribute digits as a count: ${snap}`, () => expect(parsePeopleCount(snap)).toBeNull());
+  }
   for (const [name, snap, want] of cases) {
     it(`parses: ${name}`, () => expect(parsePeopleCount(snap)).toBe(want));
   }
