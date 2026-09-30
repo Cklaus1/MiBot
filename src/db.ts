@@ -354,6 +354,32 @@ export function cancelMeeting(eventId: string): boolean {
   return res.changes > 0;
 }
 
+/**
+ * Fix 3: the inverse of cancelMeeting. The CA2 step cancels any scheduled row whose event id is
+ * missing from a sync, but absence isn't proof of deletion — the event may have moved beyond the
+ * 24h window or landed on an unread page. When the id comes back, the event demonstrably still
+ * exists, so return it to 'scheduled' with its current fields. Guarded on status = 'cancelled'
+ * (raw SQL, like cancelMeeting) so it can never resurrect a done/failed/missed meeting; the
+ * general transition table deliberately keeps 'cancelled' terminal for every other writer.
+ */
+export function reviveCancelledMeeting(
+  id: number,
+  fields: { start_time?: string; end_time?: string | null; join_url?: string; title?: string },
+): boolean {
+  const sets = ["status = 'scheduled'", 'heartbeat = ?'];
+  const vals: unknown[] = [new Date().toISOString()];
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined || !MEETING_COLUMNS.has(k)) continue;
+    sets.push(`${k} = ?`);
+    vals.push(v);
+  }
+  vals.push(id);
+  const res = getDb().prepare(
+    `UPDATE meetings SET ${sets.join(', ')} WHERE id = ? AND status = 'cancelled'`,
+  ).run(...vals);
+  return res.changes > 0;
+}
+
 export function getRecording(id: number): Recording | undefined {
   return getDb().prepare('SELECT * FROM recordings WHERE id = ?').get(id) as Recording | undefined;
 }

@@ -1,5 +1,5 @@
 import {
-  getMeetingByEventId, getMeetingByJoinUrlAndTime, getScheduledEventIds, cancelMeeting,
+  getMeetingByEventId, getMeetingByJoinUrlAndTime, getScheduledEventIds, cancelMeeting, reviveCancelledMeeting,
   insertMeeting, updateMeeting, type Meeting, type Attendee,
 } from './db.js';
 import { detectPlatform } from './bot.js';
@@ -176,6 +176,16 @@ function persistNew(meetings: NormalizedMeeting[], providerLabel: string): Meeti
     // CA2: a known event id may have been rescheduled/renamed — update in place instead of skip.
     if (nm.calendar_event_id) {
       const existing = getMeetingByEventId(nm.calendar_event_id);
+      if (existing?.status === 'cancelled') {
+        // Fix 3: CA2 cancelled it for being absent from an earlier sync; it's back, so it still
+        // exists (it had moved out of the window, or sat on an unread page). Revive it.
+        if (reviveCancelledMeeting(existing.id, {
+          start_time: nm.start_time, end_time: nm.end_time ?? null, join_url: nm.join_url, title: nm.title,
+        })) {
+          console.error(`[mibot] Restored${providerLabel}: ${nm.title} — event reappeared after being cancelled`);
+        }
+        continue;
+      }
       if (existing) {
         const diff = diffMeetingFields(existing, nm);
         if (diff) {
@@ -350,6 +360,9 @@ async function syncGoogleCalendar(): Promise<Meeting[]> {
       timeMax: end.toISOString(),
       singleEvents: true,
       orderBy: 'startTime',
+      // The API maximum. The default (250) is ample for 24h, but a truncated page here would feed
+      // the CA2 cancellation step an incomplete list, so leave no room for it.
+      maxResults: 2500,
     }),
     '--format', 'json',
   ]);
@@ -369,6 +382,10 @@ async function syncM365Calendar(): Promise<Meeting[]> {
     '--start', now.toISOString(),
     '--end', end.toISOString(),
     '--select', 'id,subject,start,end,location,onlineMeeting,body,attendees,organizer,type,seriesMasterId',
+    // Fix 3: without --all, ms365 makes ONE request and Graph pages calendarView (~10 events).
+    // A busy day silently lost every meeting past page 1, and an event pushed onto page 2 then
+    // looked "disappeared" to the CA2 cancellation step.
+    '--all',
     '-o', 'json',
   ]);
 
@@ -382,7 +399,7 @@ async function syncM365Calendar(): Promise<Meeting[]> {
  * any scheduled row under this provider's id prefix that the window no longer contains. Runs per
  * provider so a Google outage never mass-cancels M365 meetings (and vice versa).
  */
-function reconcileProvider(prefix: string, meetings: NormalizedMeeting[], label: string): Meeting[] {
+export function reconcileProvider(prefix: string, meetings: NormalizedMeeting[], label: string): Meeting[] {
   const inserted = persistNew(meetings, label);
   const seen = new Set(meetings.map((m) => m.calendar_event_id).filter((id): id is string => !!id));
   cancelDisappeared(prefix, seen);
