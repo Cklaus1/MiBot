@@ -176,3 +176,28 @@ Source: the four-agent holistic review. Ordered as the user listed them.
 - [x] 5. Wire canTransitionMeeting into the meeting status write path
 - [ ] 6. Delete the tautological tests; add a FakePage for PlaybookEngine.run
 - [x] 7. Pragmatic AR1 slice
+
+## Wave 8 — second review round (user-directed: "fix all 5")
+
+- [x] 1. Drop the People-count catch-all pattern — my Wave 7 regression (false alone-exit ~40s in). `f088076`
+- [x] 2. P1: measure WebRTC audio by decoding; silent recording = no audio (headless Teams/Zoom transcribed silence). `37d7e8b`
+- [x] 3. P1: `--all` on M365 sync; revive a cancelled meeting whose event reappears. `0bd1793`
+- [x] 4. P1: full CLDR Windows-zone table (139); warn on an unresolvable zone. `dc4119a`
+- [x] 5. P1: Meet late joiners recorded after the audio-element fallback. `327176a`
+
+### Open from the review (not yet fixed)
+- [ ] P1: one failed join is terminal — no retry while the meeting is still running (needs a retry-policy decision).
+- [ ] P2: a false stale-kill (host suspend >2min) is now permanent under the transition guard; the bot's participants/timeline are refused.
+- [ ] P2: `onlyOrganized` / `minAttendees` validated but never read.
+- [ ] P2: `MIBOT_TIMEZONE` env not validated → `fmtTime` throws and cuts syncs short.
+- [ ] P2: `pollMinutes` > ~33 guarantees missed meetings (join window vs 30-min sweep).
+- [ ] P2: a crash mid-transcription is never retried.
+- [ ] P2: multiple webm streams (reload / different frames) appended into one file.
+- [ ] P2: auto speaker-labeling picks the "dominant" cluster across ALL meetings.
+- [ ] P2: `camofoxPage.close()` has no timeout.
+- [ ] P2: failed ack after a successful append duplicates audio.
+- [ ] P3: camofox screenshot cap / .jpg for PNG; orphaned audioscript children; no single-instance lock; no pruning.
+
+### Review
+Verified end to end on a real recording: meeting 144's sidecar (233.6s speech) is now
+promoted over its -91 dB main file. 408 → 444 tests; typecheck and build clean.

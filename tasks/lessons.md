@@ -148,3 +148,33 @@
   roster diffing and speaker segmentation — browser-independent, unit-testable, and quietly
   drifted between the two copies — into src/roster.ts, without forcing a BrowserBackend over
   two page objects whose APIs have nothing in common.
+
+## Wave 8 — second review round
+
+- **A "widening" fix must be checked for the failure mode it creates, not just the one it
+  removes.** I added a catch-all People-count pattern so a real count wouldn't be missed. It
+  read attribute digits (`[nth=1]`) as the count, turning a safe failure (stay in the room) into
+  a harmful one (leave a live meeting 40s in). When a heuristic feeds an irreversible action,
+  prefer "unknown" over a guess, and test the negatives as hard as the positives.
+
+- **Header metadata is not measurement.** `ffprobe format=duration` reads a container field that
+  MediaRecorder's live-mode webm never writes. Every WebRTC capture measured N/A, so the
+  promotion rule that depended on it was dead code for its whole life — and its unit tests
+  passed, because they injected the duration. When a decision depends on a measured property,
+  test the measurement against a real artifact, not just the decision against a stub.
+
+- **Check real production artifacts before trusting a synthetic repro.** The recordings dir held
+  a meeting whose sidecar had 3m53s of speech next to a flat -91 dB main file: proof of the P1
+  and, later, the acceptance test for the fix.
+
+- **Hand-picked lookup tables are a silent-failure factory.** 44 "likely" zones left every other
+  mailbox with the original bug and no log. Generate tables from the authoritative source, and
+  make the fall-through loud.
+
+- **Absence isn't evidence of deletion.** The CA2 step treated "not in this sync" as "cancelled
+  forever". Any state derived from an incomplete read (paging, a moving window) must be
+  reversible when the thing reappears.
+
+- **Execute in-page scripts under test instead of string-matching them.** The late-joiner bug was
+  an interaction between two script strings that no grep-style test could see. A vm sandbox with
+  fakes that fail like the real API (connect(undefined) throws) reproduced it in one assertion.
