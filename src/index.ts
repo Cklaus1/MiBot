@@ -2,7 +2,7 @@ import { joinAndRecord, detectPlatform } from './bot.js';
 import { syncCalendar } from './calendar.js';
 import {
   getUpcomingMeetings, listMeetings, listRecordings, getRecordingWithMeeting,
-  recoverStaleMeetings, sweepMissedMeetings, getMeeting, isPidAlive, claimOrphanedTranscriptions, type Meeting,
+  recoverStaleMeetings, sweepMissedMeetings, getMeeting, isPidAlive, claimOrphanedTranscriptions, instanceLockPath, type Meeting,
 } from './db.js';
 import { isTerminalMeetingStatus, type MeetingStatus } from './status.js';
 import { loadConfig, saveDefaultConfig, meetingSkipReason, fmtTime } from './config.js';
@@ -13,6 +13,7 @@ import { installShutdownHandlers, registerShutdownHook, runShutdown } from './sh
 import { closeDb } from './db.js';
 import { resumeTranscription } from './transcribe-resume.js';
 import { SyncSchedule, LAUNCH_TICK_MS } from './watch-clock.js';
+import { acquireInstanceLock } from './instance-lock.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -241,6 +242,17 @@ function prioritizeMeetings(meetings: Meeting[]): Meeting[] {
 }
 
 async function startWatcher(): Promise<void> {
+  // Wave 9-K: one watcher per DB. Taken before recovery: a second watcher must not even run
+  // recovery against the first one's live bots, let alone join their meetings again.
+  const lock = acquireInstanceLock(instanceLockPath());
+  if (!lock.ok) {
+    console.error(`[mibot] Another watcher is already running (pid ${lock.heldBy}). Stop it first, or remove ${instanceLockPath()} if that process is gone.`);
+    process.exitCode = 1;
+    return;
+  }
+  registerShutdownHook('instance-lock', lock.release);
+  process.once('exit', lock.release);
+
   saveDefaultConfig();
   const config = loadConfig();
 

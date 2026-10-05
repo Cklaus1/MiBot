@@ -17,6 +17,11 @@ function resolveDbPath(): string {
   return process.env.MIBOT_DB_PATH || path.join(os.homedir(), '.config', 'mibot', 'mibot.db');
 }
 
+/** The watcher's single-instance lock lives beside the DB it guards (so each test DB gets its own). */
+export function instanceLockPath(): string {
+  return path.join(path.dirname(resolveDbPath()), 'watcher.lock');
+}
+
 let _db: Database.Database | null = null;
 
 export function getDb(): Database.Database {

@@ -228,7 +228,7 @@ Order: data-loss first, then correctness, then hygiene. One commit each, test-fi
 - [x] H. camofox `close()` + stale-tab sweep → timeouts on every fetch.
 - [x] I. Camofox screenshots → MAX_SCREENSHOTS cap; correct extension from magic bytes.
 - [x] J. audioscript timeout → run in its own process group; kill the group on timeout.
-- [ ] K. Single-instance lock for the watcher (pid lockfile, stale if pid dead).
+- [x] K. Single-instance lock for the watcher (pid lockfile, stale if pid dead).
 - [ ] L. Retention → `mibot prune [--dry-run]` + config; logs pruned by default (30d),
       recordings/screenshots/rows only when `retentionDays` is set (default off: never
       delete recordings without an explicit setting).
