@@ -8,6 +8,22 @@ const CAMOFOX_URL = process.env.CAMOFOX_URL || 'http://localhost:9377';
 const USER_ID = 'mibot';
 const SESSION_KEY = 'meet';
 const CAMOFOX_FETCH_TIMEOUT_MS = 15000;
+let fetchTimeoutMs = CAMOFOX_FETCH_TIMEOUT_MS;
+
+/** Test hook: shorten the camofox request timeout. */
+export function __setCamofoxFetchTimeoutForTest(ms: number): void {
+  fetchTimeoutMs = ms;
+}
+
+/**
+ * Wave 9-H: a fetch to camofox that cannot hang. Most calls already went through camofoxFetch's
+ * AbortController, but the tab DELETE in close() and both stale-tab-sweep calls used a bare
+ * fetch — and close() runs BEFORE transcription, so a wedged camofox stalled the meeting there
+ * with its audio never processed (the heartbeat kept running, so recovery never stepped in).
+ */
+function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(fetchTimeoutMs) });
+}
 
 /** J3 tab-ownership registry. Camofox shares one USER_ID across every bot in this
  *  install, so the on-disk tabId→owner-pid map is what lets the stale-tab sweep tell a
@@ -141,7 +157,7 @@ export async function camofoxFetch(
   opts?: CamofoxFetchOptions,
 ): Promise<any> {
   const fetchImpl = opts?.fetchImpl ?? fetch;
-  const timeoutMs = opts?.timeoutMs ?? CAMOFOX_FETCH_TIMEOUT_MS;
+  const timeoutMs = opts?.timeoutMs ?? fetchTimeoutMs;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
@@ -255,14 +271,14 @@ export class CamofoxPage {
   async screenshot(opts?: { path?: string }): Promise<Buffer> {
     if (!this.tabId) throw new Error('No tab');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), CAMOFOX_FETCH_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), fetchTimeoutMs);
     let res: Response;
     try {
       res = await fetch(`${CAMOFOX_URL}/tabs/${this.tabId}/screenshot?userId=${USER_ID}`, { signal: controller.signal });
     } catch (e) {
       const aborted = controller.signal.aborted;
       throw new CamofoxApiError(
-        aborted ? `Camofox /screenshot timed out after ${CAMOFOX_FETCH_TIMEOUT_MS}ms` : `Camofox /screenshot unreachable: ${(e as Error).message}`,
+        aborted ? `Camofox /screenshot timed out after ${fetchTimeoutMs}ms` : `Camofox /screenshot unreachable: ${(e as Error).message}`,
         '/screenshot', 0, '',
       );
     } finally {
@@ -293,7 +309,7 @@ export class CamofoxPage {
   async close(): Promise<void> {
     if (!this.tabId) return;
     try {
-      await fetch(`${CAMOFOX_URL}/tabs/${this.tabId}?userId=${USER_ID}`, { method: 'DELETE' });
+      await fetchWithTimeout(`${CAMOFOX_URL}/tabs/${this.tabId}?userId=${USER_ID}`, { method: 'DELETE' });
     } catch {}
     unregisterTab(this.tabId); // J3: drop our ownership record so we don't leave a dead entry
     this.tabId = null;
@@ -501,13 +517,13 @@ export async function launchCamofox(url: string): Promise<CamofoxPage> {
     const tabsData = await camofoxFetch('/tabs', `${CAMOFOX_URL}/tabs?userId=${USER_ID}`) as { tabs: TabInfo[] };
     for (const tab of selectStaleTabs(tabsData.tabs || [])) {
       // Navigate away to leave the meeting, then delete
-      await fetch(`${CAMOFOX_URL}/tabs/${tab.tabId}/navigate`, {
+      await fetchWithTimeout(`${CAMOFOX_URL}/tabs/${tab.tabId}/navigate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: USER_ID, url: 'https://google.com' }),
       }).catch(() => {});
       await new Promise(r => setTimeout(r, 2000));
-      await fetch(`${CAMOFOX_URL}/tabs/${tab.tabId}?userId=${USER_ID}`, { method: 'DELETE' }).catch(() => {});
+      await fetchWithTimeout(`${CAMOFOX_URL}/tabs/${tab.tabId}?userId=${USER_ID}`, { method: 'DELETE' }).catch(() => {});
       unregisterTab(tab.tabId); // clear any dead ownership record we just reclaimed
       console.error(`[mibot] Cleaned up stale camofox tab: ${tab.tabId.substring(0, 12)}`);
     }

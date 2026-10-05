@@ -225,7 +225,7 @@ Order: data-loss first, then correctness, then hygiene. One commit each, test-fi
       organizer.self); enforce both in the watcher's skip rules.
 - [x] F. `MIBOT_TIMEZONE` env → validate like the file config; warn and ignore if invalid.
 - [x] G. `pollMinutes` → decouple launch check (every minute) from calendar sync (pollMinutes).
-- [ ] H. camofox `close()` + stale-tab sweep → timeouts on every fetch.
+- [x] H. camofox `close()` + stale-tab sweep → timeouts on every fetch.
 - [ ] I. Camofox screenshots → MAX_SCREENSHOTS cap; correct extension from magic bytes.
 - [ ] J. audioscript timeout → run in its own process group; kill the group on timeout.
 - [ ] K. Single-instance lock for the watcher (pid lockfile, stale if pid dead).
