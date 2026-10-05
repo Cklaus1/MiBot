@@ -41,6 +41,13 @@ export interface MiBotConfig {
 
   /** Minimum attendees (from calendar) to join. Skips 1:1s if set to 3. */
   minAttendees: number;
+
+  /** Delete audio + screenshots of finished meetings older than this many days, and rows of
+   *  meetings that never recorded. 0 = keep forever (default). Transcripts are never deleted. */
+  retentionDays: number;
+
+  /** Delete log files older than this many days. 0 = keep forever. */
+  logRetentionDays: number;
 }
 
 export const DEFAULTS: MiBotConfig = {
@@ -85,6 +92,8 @@ export const DEFAULTS: MiBotConfig = {
   ],
   onlyOrganized: false,
   minAttendees: 0,
+  retentionDays: 0,
+  logRetentionDays: 30,
 };
 
 /** Numeric fields and their valid [min, max] ranges (inclusive). Anything outside the
@@ -97,6 +106,8 @@ const NUMERIC_RANGES: Record<string, [number, number]> = {
   aloneTimeoutMinutes: [1, 240],
   minHumansToStay: [0, 100],
   minAttendees: [0, 100],
+  retentionDays: [0, 3650],
+  logRetentionDays: [0, 3650],
 };
 
 const ARRAY_FIELDS = ['botPatterns', 'neverJoin'] as const;

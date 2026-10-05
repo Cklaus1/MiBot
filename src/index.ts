@@ -1,4 +1,4 @@
-import { joinAndRecord, detectPlatform } from './bot.js';
+import { joinAndRecord, detectPlatform, RECORDINGS_DIR } from './bot.js';
 import { syncCalendar } from './calendar.js';
 import {
   getUpcomingMeetings, listMeetings, listRecordings, getRecordingWithMeeting,
@@ -8,12 +8,13 @@ import { isTerminalMeetingStatus, type MeetingStatus } from './status.js';
 import { loadConfig, saveDefaultConfig, meetingSkipReason, fmtTime } from './config.js';
 import { sendCommand, parseControlResponse } from './control.js';
 import { safeParseArray, parseJoinArgs } from './cli.js';
-import { log } from './log.js';
+import { log, LOG_DIR } from './log.js';
 import { installShutdownHandlers, registerShutdownHook, runShutdown } from './shutdown.js';
 import { closeDb } from './db.js';
 import { resumeTranscription } from './transcribe-resume.js';
 import { SyncSchedule, LAUNCH_TICK_MS } from './watch-clock.js';
 import { acquireInstanceLock } from './instance-lock.js';
+import { prune, type PruneReport } from './prune.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -39,8 +40,27 @@ async function main(): Promise<void> {
     case 'config':   showConfig(); break;
     case 'send':     await sendCmd(parseInt(args[1], 10), args.slice(2).join(' ')); break;
     case 'status':   showStatus(); break;
+    case 'prune':    pruneCommand(args.includes('--dry-run')); break;
     default:         printUsage(); break;
   }
+}
+
+/** Run one retention pass with the configured limits. */
+function runPrune(dryRun: boolean): PruneReport {
+  const config = loadConfig();
+  return prune({
+    retentionDays: config.retentionDays, logRetentionDays: config.logRetentionDays,
+    logDir: LOG_DIR, recordingsDir: RECORDINGS_DIR, dryRun,
+  });
+}
+
+function pruneCommand(dryRun: boolean): void {
+  const config = loadConfig();
+  const r = runPrune(dryRun);
+  const verb = dryRun ? 'Would delete' : 'Deleted';
+  console.log(`${verb}: ${r.logs.length} log file(s), ${r.audio.length} audio file(s), ${r.screenshotDirs.length} screenshot folder(s), ${r.meetingRows} empty meeting row(s) — ${(r.bytes / 1024 / 1024).toFixed(1)} MB`);
+  console.log(`Limits: logs ${config.logRetentionDays || 'kept forever'}${config.logRetentionDays ? 'd' : ''}; recordings ${config.retentionDays ? config.retentionDays + 'd' : 'kept forever (set retentionDays in config.json to enable)'}. Transcripts are never deleted.`);
+  if (dryRun) for (const f of [...r.logs, ...r.audio, ...r.screenshotDirs]) console.log(`  ${f}`);
 }
 
 function printUsage(): void {
@@ -56,6 +76,7 @@ Usage:
   mibot config                   Show current configuration
   mibot status                   Show running bots + health
   mibot send <id> <command>      Send command to running bot
+  mibot prune [--dry-run]        Delete old logs (and, if retentionDays is set, old audio)
 
 Control commands:
   screenshot [path]              Take screenshot of bot's browser
@@ -282,6 +303,7 @@ async function startWatcher(): Promise<void> {
   let polling = false;
   let resumingTranscriptions = false;
   const skipLogged = new Set<number>();
+  let lastPruneAt = 0;
   const poll = async () => {
     if (polling) { console.error('[mibot] Poll still running, skipping this tick'); return; }
     polling = true;
@@ -333,6 +355,16 @@ async function startWatcher(): Promise<void> {
             }
           })().finally(() => { resumingTranscriptions = false; });
         }
+      }
+
+      // Wave 9-L: retention, once a day (cheap, but no reason to walk the dirs every minute).
+      if (Date.now() - lastPruneAt >= 24 * 60 * 60 * 1000) {
+        lastPruneAt = Date.now();
+        try {
+          const r = runPrune(false);
+          const total = r.logs.length + r.audio.length + r.screenshotDirs.length + r.meetingRows;
+          if (total > 0) console.error(`[mibot] Retention: removed ${r.logs.length} log(s), ${r.audio.length} audio file(s), ${r.screenshotDirs.length} screenshot folder(s), ${r.meetingRows} row(s) (${(r.bytes / 1024 / 1024).toFixed(1)} MB)`);
+        } catch (err) { console.error(`[mibot] Retention pass failed: ${(err as Error).message}`); }
       }
 
       const upcoming = getUpcomingMeetings(config.joinBeforeMinutes + 1);

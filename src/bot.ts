@@ -30,7 +30,7 @@ import { registerShutdownHook } from './shutdown.js';
 import { isNavTimeout, closeOrKill } from './bot-teardown.js';
 import { log } from './log.js';
 
-const RECORDINGS_DIR = path.join(os.homedir(), '.config', 'mibot', 'recordings');
+export const RECORDINGS_DIR = path.join(os.homedir(), '.config', 'mibot', 'recordings');
 
 /** Detect platform from a meeting URL. */
 export function detectPlatform(url: string): 'zoom' | 'teams' | 'meet' | null {

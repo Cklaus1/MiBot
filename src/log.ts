@@ -6,7 +6,7 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
-const LOG_DIR = path.join(os.homedir(), '.config', 'mibot', 'logs');
+export const LOG_DIR = path.join(os.homedir(), '.config', 'mibot', 'logs');
 
 /**
  * Validate MIBOT_LOG_LEVEL against the known set, falling back to 'info' (C17).
