@@ -20,7 +20,7 @@ import { ControlChannel } from './control.js';
 import { waitForMeetingEnd, SpeakerTracker } from './meeting.js';
 import { RosterTracker } from './roster.js';
 import { LeavePolicy } from './leave-policy.js';
-import { isSimilarImage } from './image-similarity.js';
+import { ShareScreenshots, MAX_SCREENSHOTS } from './image-similarity.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
 import { type CaptureSession, webrtcAudioPathFor, hasUsableAudio } from './capture-session.js';
 import { transcribe } from './transcribe.js';
@@ -570,11 +570,10 @@ async function monitorCamofoxMeeting(
   let snapshotDumped = false;  // dump the first snapshot once per meeting (verification aid)
   let isPresenting = false;
   let lastScreenshotTime = 0;
-  let lastScreenshotBuf: Buffer | null = null;
-  let screenshotCount = 0;
-  const screenshotPaths: string[] = [];
+
   const screenshotDir = path.join(RECORDINGS_DIR, `screenshots-${meetingId}`);
   if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir, { recursive: true });
+  const shareShots = new ShareScreenshots(screenshotDir);
   const webrtcAudioPath = webrtcAudioPathFor(audioPath);
   const audioDrain = new DrainState(); // sequence/segment bookkeeping for this capture (Wave 9-C)
   let lastAudioFlush = 0;
@@ -727,18 +726,11 @@ async function monitorCamofoxMeeting(
           allSignals.push({ raw: `${presenter} is presenting`, type: 'screenshare', who: presenter, detail: 'started', time: new Date().toISOString() });
           console.error(`[mibot] 🖥️ ${presenter} is presenting`);
         }
-        if (Date.now() - lastScreenshotTime >= 30000) {
-          const screenshotBuf = await page.screenshot({ path: undefined });
-          if (screenshotBuf.length > 1000) {
-            if (!lastScreenshotBuf || !isSimilarImage(lastScreenshotBuf, screenshotBuf, 0.08)) {
-              const ssPath = path.join(screenshotDir, `share-${Date.now()}.jpg`);
-              fs.writeFileSync(ssPath, screenshotBuf);
-              screenshotPaths.push(ssPath);
-              screenshotCount++;
-              lastScreenshotBuf = screenshotBuf;
-              console.error(`[mibot] 📸 Screenshot ${screenshotCount}: ${ssPath}`);
-            }
-          }
+        // Wave 9-I: capped like the Playwright path, and saved under its real image type.
+        if (!shareShots.full && Date.now() - lastScreenshotTime >= 30000) {
+          const saved = shareShots.save(await page.screenshot({ path: undefined }));
+          if (saved) console.error(`[mibot] 📸 Screenshot ${shareShots.paths.length}: ${saved}`);
+          if (shareShots.full) console.error(`[mibot] Max screenshots (${MAX_SCREENSHOTS}) reached, no more this meeting`);
           lastScreenshotTime = Date.now();
         }
       } else if (isPresenting) {
@@ -791,7 +783,7 @@ async function monitorCamofoxMeeting(
     chat: allSignals.filter(s => s.type === 'chat').map(s => ({ sender: s.who, text: s.detail, timestamp: s.time })),
     reactions: allSignals.filter(s => s.type === 'reaction').map(s => ({ participant: s.who, type: s.detail, timestamp: s.time })),
     hand_raises: allSignals.filter(s => s.type === 'hand').map(s => ({ participant: s.who, raised_at: s.time, lowered_at: null })),
-    screen_shares: allSignals.filter(s => s.type === 'screenshare' && s.detail === 'started').map(s => ({ presenter: s.who, started_at: s.time, ended_at: null, screenshots: screenshotPaths })),
+    screen_shares: allSignals.filter(s => s.type === 'screenshare' && s.detail === 'started').map(s => ({ presenter: s.who, started_at: s.time, ended_at: null, screenshots: shareShots.paths })),
   };
   console.error(`[mibot] Signals: ${signals.chat.length} chat, ${signals.reactions.length} reactions, ${signals.hand_raises.length} hands`);
 

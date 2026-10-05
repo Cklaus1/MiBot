@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 // image-similarity.ts — one shared perceptual screenshot-similarity check (M16).
 //
 // The Playwright path (signals.ts) and the camofox path (bot.ts) each had a near-identical
@@ -52,4 +54,41 @@ export function isSimilarImage(a: Buffer, b: Buffer, threshold: number): boolean
   }
 
   return compared === 0 ? true : (diffCount / compared) < threshold;
+}
+
+/** Shared cap on screen-share screenshots per meeting, for both engines. */
+export const MAX_SCREENSHOTS = 240;
+
+/** File extension from an image's magic bytes. Camofox returns PNG; it was being saved as .jpg. */
+export function imageExtension(buf: Buffer): 'png' | 'jpg' | 'webp' | 'img' {
+  if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+  if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  return 'img';
+}
+
+/** Per-meeting screenshot bookkeeping for ShareScreenshots. */
+export class ShareScreenshots {
+  readonly paths: string[] = [];
+  private last: Buffer | null = null;
+
+  constructor(private readonly dir: string, private readonly max = MAX_SCREENSHOTS) {}
+
+  /** Room for another? Check BEFORE capturing, so a capped meeting stops paying for screenshots. */
+  get full(): boolean { return this.paths.length >= this.max; }
+
+  /**
+   * Wave 9-I: save a share screenshot unless the cap is reached, it's too small to be real, or
+   * it's visually the same as the last one saved. The camofox loop had no cap (an 8h
+   * presentation → ~960 files) and wrote PNG bytes under a .jpg name. Returns the path or null.
+   */
+  save(buf: Buffer, now: number = Date.now()): string | null {
+    if (this.full || buf.length <= 1000) return null;
+    if (this.last && isSimilarImage(this.last, buf, 0.08)) return null;
+    const p = path.join(this.dir, `share-${now}.${imageExtension(buf)}`);
+    fs.writeFileSync(p, buf);
+    this.paths.push(p);
+    this.last = buf;
+    return p;
+  }
 }

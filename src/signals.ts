@@ -4,7 +4,7 @@ import path from 'path';
 import { OccurrenceDeduper, risingEdgeReactions, HandRaiseTracker } from './signal-dedup.js';
 // M12/M16: one shared, correctly-normalized screenshot-similarity check (was duplicated inline
 // here and in bot.ts, both dividing the diff count by `samples` instead of the actual count).
-import { isSimilarImage } from './image-similarity.js';
+import { isSimilarImage, MAX_SCREENSHOTS } from './image-similarity.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -89,7 +89,7 @@ export class SignalTracker {
   private lastScreenshot = 0;
   private screenshotCount = 0;
   private lastScreenshotBytes: Buffer | null = null;
-  private static readonly MAX_SCREENSHOTS = 240;
+  private static readonly MAX_SCREENSHOTS = MAX_SCREENSHOTS; // shared with the camofox path
 
   constructor(recordingDir: string, meetingId: number) {
     this.screenshotDir = path.join(recordingDir, `screenshots-${meetingId}`);
