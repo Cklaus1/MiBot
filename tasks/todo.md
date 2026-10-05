@@ -227,7 +227,7 @@ Order: data-loss first, then correctness, then hygiene. One commit each, test-fi
 - [x] G. `pollMinutes` → decouple launch check (every minute) from calendar sync (pollMinutes).
 - [x] H. camofox `close()` + stale-tab sweep → timeouts on every fetch.
 - [x] I. Camofox screenshots → MAX_SCREENSHOTS cap; correct extension from magic bytes.
-- [ ] J. audioscript timeout → run in its own process group; kill the group on timeout.
+- [x] J. audioscript timeout → run in its own process group; kill the group on timeout.
 - [ ] K. Single-instance lock for the watcher (pid lockfile, stale if pid dead).
 - [ ] L. Retention → `mibot prune [--dry-run]` + config; logs pruned by default (30d),
       recordings/screenshots/rows only when `retentionDays` is set (default off: never

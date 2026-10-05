@@ -9,7 +9,7 @@
 //   - JSON-shape parsing + validation for JSON-producing tools (T7/CA1/CA7)
 //   - `--`-terminated argv so a user-controlled positional can't be read as a flag (T5)
 
-import { execFile } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 
 export interface RunCliOptions {
   /** Working directory for the child process. */
@@ -61,8 +61,38 @@ export function buildArgv(
   return positionals.length > 0 ? [...head, '--', ...positionals] : head;
 }
 
-/** Run an external binary. Rejects with CliError on spawn failure, timeout, or
- *  (unless allowNonZero) a non-zero exit code. */
+/** Process groups of CLIs currently running (Wave 9-J). */
+const activeGroups = new Set<number>();
+
+/** SIGTERM, then SIGKILL after a grace period, to a whole process group. */
+function killGroup(pid: number, graceMs = 5000): void {
+  try { process.kill(-pid, 'SIGTERM'); } catch { return; } // group already gone
+  const t = setTimeout(() => { try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ } }, graceMs);
+  t.unref();
+}
+
+/**
+ * Kill every CLI process group still running. Each CLI runs in its own group (see runCli), which
+ * means the terminal's Ctrl+C — delivered to the FOREGROUND group — no longer reaches it, so
+ * shutdown must do it. Synchronous so it also works from a process 'exit' handler.
+ */
+export function killActiveCliGroups(): void {
+  for (const pid of activeGroups) {
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+  }
+  activeGroups.clear();
+}
+process.once('exit', killActiveCliGroups);
+
+/**
+ * Run an external binary. Rejects with CliError on spawn failure, timeout, maxBuffer overflow,
+ * or (unless allowNonZero) a non-zero exit code.
+ *
+ * Wave 9-J: this used execFile, whose timeout SIGTERMs only the DIRECT child. audioscript spawns
+ * whisper/diarization workers, so after the 30-minute timeout they kept running on the GPU,
+ * orphaned. The CLI now starts in its own process group (detached) and timeouts kill the whole
+ * group — SIGTERM, then SIGKILL if it lingers.
+ */
 export function runCli(bin: string, args: string[], opts: RunCliOptions = {}): Promise<CliResult> {
   const {
     cwd, env, timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -70,30 +100,68 @@ export function runCli(bin: string, args: string[], opts: RunCliOptions = {}): P
   } = opts;
 
   return new Promise((resolve, reject) => {
-    execFile(
-      bin, args,
-      { cwd, env: env ? { ...process.env, ...env } : process.env, timeout: timeoutMs, maxBuffer },
-      (err, stdout, stderr) => {
-        const out = stdout?.toString() ?? '';
-        const errOut = stderr?.toString() ?? '';
-        if (err) {
-          // execFile sets err.code to the exit code (number) or a string like 'ENOENT'/'ETIMEDOUT'.
-          const rawCode = (err as any).code;
-          const code = typeof rawCode === 'number' ? rawCode : null;
-          if (allowNonZero && code !== null) {
-            resolve({ stdout: out, stderr: errOut, code });
-            return;
-          }
-          const detail = typeof rawCode === 'string' ? ` (${rawCode})` : '';
-          reject(new CliError(
-            `${bin} failed${detail}: ${err.message}${errOut ? '\n' + errOut.slice(0, 500) : ''}`,
-            bin, code, out, errOut,
-          ));
-          return;
-        }
-        resolve({ stdout: out, stderr: errOut, code: 0 });
-      },
-    );
+    let child: ChildProcess;
+    try {
+      child = spawn(bin, args, {
+        cwd, env: env ? { ...process.env, ...env } : process.env,
+        detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      reject(new CliError(`${bin} failed: ${(err as Error).message}`, bin, null, '', ''));
+      return;
+    }
+
+    const out: Buffer[] = [];
+    const errBuf: Buffer[] = [];
+    let outLen = 0;
+    let errLen = 0;
+    let failure: string | null = null; // why WE ended it: timeout / maxBuffer
+    let settled = false;
+
+    const fail = (reason: string) => {
+      if (failure) return;
+      failure = reason;
+      if (child.pid) killGroup(child.pid);
+    };
+    const timer = setTimeout(() => fail(`timed out after ${timeoutMs}ms (ETIMEDOUT)`), timeoutMs);
+
+    child.stdout!.on('data', (d: Buffer) => {
+      outLen += d.length;
+      if (outLen > maxBuffer) { fail(`stdout exceeded maxBuffer (${maxBuffer} bytes)`); return; }
+      out.push(d);
+    });
+    child.stderr!.on('data', (d: Buffer) => {
+      errLen += d.length;
+      if (errLen > maxBuffer) { fail(`stderr exceeded maxBuffer (${maxBuffer} bytes)`); return; }
+      errBuf.push(d);
+    });
+
+    if (child.pid) activeGroups.add(child.pid);
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (child.pid) activeGroups.delete(child.pid);
+      fn();
+    };
+
+    child.on('error', (err: NodeJS.ErrnoException) => finish(() => {
+      const detail = err.code ? ` (${err.code})` : '';
+      reject(new CliError(`${bin} failed${detail}: ${err.message}`, bin, null, '', ''));
+    }));
+
+    child.on('close', (code, signal) => finish(() => {
+      const stdout = Buffer.concat(out).toString();
+      const stderr = Buffer.concat(errBuf).toString();
+      if (failure) {
+        reject(new CliError(`${bin} failed: ${failure}${stderr ? '\n' + stderr.slice(0, 500) : ''}`, bin, null, stdout, stderr));
+        return;
+      }
+      if (code === 0) { resolve({ stdout, stderr, code: 0 }); return; }
+      if (code !== null && allowNonZero) { resolve({ stdout, stderr, code }); return; }
+      const why = code !== null ? `exited with code ${code}` : `killed by ${signal}`;
+      reject(new CliError(`${bin} failed: ${why}${stderr ? '\n' + stderr.slice(0, 500) : ''}`, bin, code, stdout, stderr));
+    }));
   });
 }
 
