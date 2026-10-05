@@ -2,7 +2,7 @@ import { joinAndRecord, detectPlatform } from './bot.js';
 import { syncCalendar } from './calendar.js';
 import {
   getUpcomingMeetings, listMeetings, listRecordings, getRecordingWithMeeting,
-  recoverStaleMeetings, sweepMissedMeetings, getMeeting, isPidAlive, type Meeting,
+  recoverStaleMeetings, sweepMissedMeetings, getMeeting, isPidAlive, claimOrphanedTranscriptions, type Meeting,
 } from './db.js';
 import { isTerminalMeetingStatus, type MeetingStatus } from './status.js';
 import { loadConfig, saveDefaultConfig, shouldSkipMeeting, fmtTime } from './config.js';
@@ -11,6 +11,7 @@ import { safeParseArray, parseJoinArgs } from './cli.js';
 import { log } from './log.js';
 import { installShutdownHandlers, registerShutdownHook, runShutdown } from './shutdown.js';
 import { closeDb } from './db.js';
+import { resumeTranscription } from './transcribe-resume.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -266,6 +267,7 @@ async function startWatcher(): Promise<void> {
   // timeouts in syncCalendar) can still be running when the next tick fires, overlapping
   // two calendar syncs. Skip a tick while the previous one is in flight.
   let polling = false;
+  let resumingTranscriptions = false;
   const poll = async () => {
     if (polling) { console.error('[mibot] Poll still running, skipping this tick'); return; }
     polling = true;
@@ -292,6 +294,23 @@ async function startWatcher(): Promise<void> {
         for (const id of activeBots) {
           const m = getMeeting(id);
           if (!m || isTerminalMeetingStatus(m.status as MeetingStatus)) activeBots.delete(id);
+        }
+      }
+
+      // Wave 9-B: resume transcriptions a crash interrupted. One at a time, off the poll path;
+      // each is tracked in activeBots while it runs, so ownerAlive vouches for it and it shares
+      // the concurrency cap with live bots (both are heavy).
+      if (!resumingTranscriptions) {
+        const jobs = claimOrphanedTranscriptions((pid, meetingId) =>
+          pid === process.pid ? activeBots.has(meetingId) : isPidAlive(pid));
+        if (jobs.length > 0) {
+          resumingTranscriptions = true;
+          for (const j of jobs) activeBots.add(j.meetingId);
+          void (async () => {
+            for (const job of jobs) {
+              try { await resumeTranscription(job); } finally { activeBots.delete(job.meetingId); }
+            }
+          })().finally(() => { resumingTranscriptions = false; });
         }
       }
 

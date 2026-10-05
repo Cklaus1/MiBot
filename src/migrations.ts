@@ -128,6 +128,13 @@ export const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, 'meetings', 'owner_pid', 'INTEGER');
     },
   },
+  {
+    version: 6,
+    name: 'transcribe_attempts: resume a transcription interrupted by a crash',
+    up: (db) => {
+      addColumnIfMissing(db, 'recordings', 'transcribe_attempts', 'INTEGER DEFAULT 0');
+    },
+  },
 ];
 
 /**

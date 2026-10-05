@@ -107,6 +107,8 @@ export interface Recording {
   metadata_path: string | null;
   duration_seconds: number | null;
   status: string;
+  /** Times a crashed transcription has been resumed (Wave 9-B). */
+  transcribe_attempts: number | null;
   created_at: string;
 }
 
@@ -238,6 +240,68 @@ export function updateHeartbeat(id: number): void {
   getDb().prepare('UPDATE meetings SET heartbeat = ? WHERE id = ?').run(new Date().toISOString(), id);
 }
 
+/** An active row whose bot hasn't proven liveness for 2 minutes (NULL heartbeat → created_at, D3). */
+const STALE_WHERE = `
+  status IN ('joining', 'in_call', 'processing')
+  AND datetime(COALESCE(heartbeat, created_at)) < datetime('now', '-2 minutes')
+`;
+
+/** A meeting interrupted mid-transcription: processing, with a recording still 'recorded'. */
+const RESUMABLE_TRANSCRIPTION = `
+  status = 'processing'
+  AND EXISTS (SELECT 1 FROM recordings r WHERE r.meeting_id = meetings.id AND r.status = 'recorded')
+`;
+
+export interface TranscriptionJob {
+  meetingId: number;
+  recordingId: number;
+  audioPath: string;
+  participants: Participant[];
+  speakerTimeline: SpeakerSegment[];
+  /** Including this one. */
+  attempts: number;
+}
+
+/**
+ * Wave 9-B: claim transcriptions orphaned by a crash — the meeting is 'processing', its recording
+ * 'recorded' (audio on disk, transcription never finished), the heartbeat stale and the owner
+ * gone. Claiming stamps this process as owner and refreshes the heartbeat in one transaction, so
+ * a row is never claimed twice; the attempt counter bounds a crash-loop.
+ */
+export function claimOrphanedTranscriptions(
+  ownerAlive: (pid: number, meetingId: number) => boolean = defaultOwnerAlive,
+): TranscriptionJob[] {
+  const db = getDb();
+  const claim = db.transaction(() => {
+    const rows = db.prepare(`
+      SELECT m.id AS meetingId, m.owner_pid, m.participants, m.speaker_timeline,
+             r.id AS recordingId, r.audio_path AS audioPath, COALESCE(r.transcribe_attempts, 0) AS prior
+      FROM meetings m JOIN recordings r ON r.meeting_id = m.id AND r.status = 'recorded'
+      WHERE m.id IN (SELECT id FROM meetings WHERE ${STALE_WHERE} AND ${RESUMABLE_TRANSCRIPTION})
+    `).all() as Array<{ meetingId: number; owner_pid: number | null; participants: string | null;
+      speaker_timeline: string | null; recordingId: number; audioPath: string; prior: number }>;
+    const now = new Date().toISOString();
+    const jobs: TranscriptionJob[] = [];
+    for (const row of rows) {
+      if (row.owner_pid !== null && ownerAlive(row.owner_pid, row.meetingId)) continue;
+      db.prepare('UPDATE meetings SET owner_pid = ?, heartbeat = ? WHERE id = ?').run(process.pid, now, row.meetingId);
+      db.prepare('UPDATE recordings SET transcribe_attempts = ? WHERE id = ?').run(row.prior + 1, row.recordingId);
+      jobs.push({
+        meetingId: row.meetingId, recordingId: row.recordingId, audioPath: row.audioPath,
+        participants: safeJson(row.participants), speakerTimeline: safeJson(row.speaker_timeline),
+        attempts: row.prior + 1,
+      });
+    }
+    return jobs;
+  });
+  return claim();
+}
+
+function safeJson<T>(s: string | null): T[] {
+  if (!s) return [];
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+
 /** Does a process with this pid exist? EPERM means it exists but isn't ours — still alive. */
 export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -273,10 +337,9 @@ export function recoverStaleMeetings(
   // every active row gets the same 2-minute grace window before being force-failed.
   // D4: fail the orphan recordings of killed meetings in the SAME transaction, without
   // downgrading any recording that already reached a terminal status (C7).
-  const staleWhere = `
-    status IN ('joining', 'in_call', 'processing')
-    AND datetime(COALESCE(heartbeat, created_at)) < datetime('now', '-2 minutes')
-  `;
+  // Wave 9-B: a meeting that crashed DURING transcription has its audio safely on disk; it's
+  // left for claimOrphanedTranscriptions to resume rather than failed here.
+  const staleWhere = `${STALE_WHERE} AND NOT (${RESUMABLE_TRANSCRIPTION})`;
   const recover = db.transaction(() => {
     const stale = db.prepare(`SELECT id, owner_pid FROM meetings WHERE ${staleWhere}`)
       .all() as { id: number; owner_pid: number | null }[];
