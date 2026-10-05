@@ -181,9 +181,17 @@ export function loadConfig(): MiBotConfig {
     return isNaN(n) || n < min || n > max ? undefined : n;
   };
 
+  // Wave 9-F: the env zone gets the same check as the file's. Unvalidated, a bad value made
+  // fmtTime throw — mid-sync, which cut every calendar sync short after one new meeting.
+  let envTimezone: string | undefined;
+  if (env.MIBOT_TIMEZONE) {
+    if (isValidTimezone(env.MIBOT_TIMEZONE)) envTimezone = env.MIBOT_TIMEZONE;
+    else console.error(`[mibot] WARN: MIBOT_TIMEZONE "${env.MIBOT_TIMEZONE}" is not a valid IANA zone — ignored (using ${validated.timezone})`);
+  }
+
   _config = {
     ...validated,
-    ...(env.MIBOT_TIMEZONE ? { timezone: env.MIBOT_TIMEZONE } : {}),
+    ...(envTimezone ? { timezone: envTimezone } : {}),
     ...(env.MIBOT_NAME ? { botName: env.MIBOT_NAME } : {}),
     ...(safeInt(env.MIBOT_JOIN_BEFORE, 0, 60) !== undefined ? { joinBeforeMinutes: safeInt(env.MIBOT_JOIN_BEFORE, 0, 60)! } : {}),
     ...(safeInt(env.MIBOT_POLL_MINUTES, 1, 60) !== undefined ? { pollMinutes: safeInt(env.MIBOT_POLL_MINUTES, 1, 60)! } : {}),
@@ -255,10 +263,13 @@ export function fmtTime(dateStr: string): string {
   const d = new Date(normalized);
   if (isNaN(d.getTime())) return trimmed || '(no date)';
 
-  return d.toLocaleString('en-US', {
-    timeZone: config.timezone,
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
+  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+  try {
+    return d.toLocaleString('en-US', { ...opts, timeZone: config.timezone });
+  } catch {
+    // A display helper must never throw: callers include the calendar sync loop.
+    return d.toLocaleString('en-US', { ...opts, timeZone: 'UTC' }) + ' UTC';
+  }
 }
 
 /** Check if a meeting title matches "never join" patterns. */
