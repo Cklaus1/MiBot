@@ -2,7 +2,7 @@ import { joinAndRecord, detectPlatform } from './bot.js';
 import { syncCalendar } from './calendar.js';
 import {
   getUpcomingMeetings, listMeetings, listRecordings, getRecordingWithMeeting,
-  recoverStaleMeetings, sweepMissedMeetings, getMeeting, type Meeting,
+  recoverStaleMeetings, sweepMissedMeetings, getMeeting, isPidAlive, type Meeting,
 } from './db.js';
 import { isTerminalMeetingStatus, type MeetingStatus } from './status.js';
 import { loadConfig, saveDefaultConfig, shouldSkipMeeting, fmtTime } from './config.js';
@@ -277,8 +277,11 @@ async function startWatcher(): Promise<void> {
       const missed = sweepMissedMeetings();
       if (missed > 0) console.error(`[mibot] Marked ${missed} overdue meeting(s) missed`);
 
-      // Recover any bots that died since last poll
-      const staleRecovered = recoverStaleMeetings();
+      // Recover any bots that died since last poll. Our own bots run in this process, so a
+      // stale row of ours is only dead if we're no longer tracking its bot (a host suspend
+      // stalls heartbeats without killing anything — Wave 9-A).
+      const staleRecovered = recoverStaleMeetings((pid, meetingId) =>
+        pid === process.pid ? activeBots.has(meetingId) : isPidAlive(pid));
       if (staleRecovered > 0) {
         console.error(`[mibot] Recovered ${staleRecovered} stale bot(s)`);
         // Clean up activeBots — drop ids whose row is no longer running. This used to call

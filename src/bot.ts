@@ -114,7 +114,8 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
   const audioPath = path.join(RECORDINGS_DIR, `${meeting.id}-${platform}-${Date.now()}.webm`);
   const recording = insertRecording({ meeting_id: meeting.id, audio_path: audioPath });
 
-  updateMeetingStatus(meeting.id, 'joining');
+  // Claim the row: recovery only fails a stale meeting whose owner process is gone (Wave 9-A).
+  updateMeeting(meeting.id, { status: 'joining', owner_pid: process.pid });
 
   let controlChannel: ControlChannel | null = null;
   let browser: PWBrowser | null = null;

@@ -207,3 +207,28 @@ promoted over its -91 dB main file. 408 → 444 tests; typecheck and build clean
   race-*, created 2026-07-29 — a race test that wrote to the real DB before MIBOT_DB_PATH
   isolation). No child recordings. Backup: ~/.config/mibot/mibot.db.bak-20260930-112213-before-junk-delete
   (integrity ok, 1090 rows). DB after: 1066 rows, integrity ok.
+
+## Wave 9 — "fix all" (remaining P2/P3 from the second review)
+
+Order: data-loss first, then correctness, then hygiene. One commit each, test-first.
+
+- [x] A. Sleep/suspend false stale-kill → stamp `owner_pid` on a meeting when a bot claims it;
+      recovery skips rows whose owner process is still alive. (migration v5)
+- [ ] B. Crash mid-transcription → recovery leaves `processing` meetings whose recording is
+      `recorded` alone; the watcher claims and re-transcribes them (max 3 attempts).
+- [ ] C. webm stream splicing + duplicate-on-failed-ack → in-page recorder id + chunk sequence
+      numbers; node reads from its persisted seq (no dupes) and starts a new segment when the
+      recorder id changes; segments joined with ffmpeg concat at the end.
+- [ ] D. Speaker auto-label → use only clusters present in THIS meeting's transcript, rank by
+      this meeting's talk time; no diarization info → don't label.
+- [ ] E. `onlyOrganized` / `minAttendees` → store is_organizer (Graph isOrganizer, Google
+      organizer.self); enforce both in the watcher's skip rules.
+- [ ] F. `MIBOT_TIMEZONE` env → validate like the file config; warn and ignore if invalid.
+- [ ] G. `pollMinutes` → decouple launch check (every minute) from calendar sync (pollMinutes).
+- [ ] H. camofox `close()` + stale-tab sweep → timeouts on every fetch.
+- [ ] I. Camofox screenshots → MAX_SCREENSHOTS cap; correct extension from magic bytes.
+- [ ] J. audioscript timeout → run in its own process group; kill the group on timeout.
+- [ ] K. Single-instance lock for the watcher (pid lockfile, stale if pid dead).
+- [ ] L. Retention → `mibot prune [--dry-run]` + config; logs pruned by default (30d),
+      recordings/screenshots/rows only when `retentionDays` is set (default off: never
+      delete recordings without an explicit setting).

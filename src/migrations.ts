@@ -121,6 +121,13 @@ export const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, 'meetings', 'next_join_at', 'TEXT');
     },
   },
+  {
+    version: 5,
+    name: 'owner_pid: which process is running the bot (stale recovery)',
+    up: (db) => {
+      addColumnIfMissing(db, 'meetings', 'owner_pid', 'INTEGER');
+    },
+  },
 ];
 
 /**

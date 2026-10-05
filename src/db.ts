@@ -93,6 +93,8 @@ export interface Meeting {
   join_attempts: number | null;
   /** A retrying meeting isn't joinable before this instant (backoff). */
   next_join_at: string | null;
+  /** PID of the process running this meeting's bot; recovery only fails rows whose owner is gone. */
+  owner_pid: number | null;
   status: string;
   created_at: string;
 }
@@ -168,7 +170,7 @@ const MEETING_COLUMNS = new Set([
   'title', 'platform', 'join_url', 'start_time', 'end_time', 'actual_start', 'actual_end',
   'calendar_event_id', 'organizer', 'organizer_email', 'location', 'description',
   'attendees', 'is_recurring', 'recurrence_id', 'status', 'participants', 'speaker_timeline',
-  'heartbeat',
+  'heartbeat', 'owner_pid',
 ]);
 
 export function updateMeeting(id: number, updates: Record<string, unknown>): void {
@@ -236,7 +238,35 @@ export function updateHeartbeat(id: number): void {
   getDb().prepare('UPDATE meetings SET heartbeat = ? WHERE id = ?').run(new Date().toISOString(), id);
 }
 
-export function recoverStaleMeetings(): number {
+/** Does a process with this pid exist? EPERM means it exists but isn't ours — still alive. */
+export function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Default liveness: another process is judged by its pid; this process's own rows are NOT
+ *  vouched for, since only a caller that tracks its running bots (the watcher) can tell a live
+ *  bot of ours from one that ended without updating its row. */
+const defaultOwnerAlive = (pid: number): boolean => pid !== process.pid && isPidAlive(pid);
+
+/**
+ * Fail meetings whose bot has died, and their unfinished recordings.
+ *
+ * Wave 9-A: a stale heartbeat alone is NOT proof of death. A host suspend longer than the
+ * 2-minute threshold (WSL sleep, a closed laptop lid) stalls every timer, so a perfectly live
+ * bot looked dead; recovery failed its row, and the transition guard then refused all of the
+ * bot's later writes — participants, timeline and actual_end were silently dropped. Now a stale
+ * row is only failed when its owning process is gone (or it has no recorded owner — a legacy
+ * row). `ownerAlive(pid, meetingId)` lets the watcher vouch precisely for its own in-process bots.
+ */
+export function recoverStaleMeetings(
+  ownerAlive: (pid: number, meetingId: number) => boolean = defaultOwnerAlive,
+): number {
   const db = getDb();
   // D3: a NULL heartbeat must NOT mean "instantly stale" — a bot in the waiting room
   // (`joining`) or a legacy row simply hasn't stamped one yet. Fall back to created_at so
@@ -248,12 +278,21 @@ export function recoverStaleMeetings(): number {
     AND datetime(COALESCE(heartbeat, created_at)) < datetime('now', '-2 minutes')
   `;
   const recover = db.transaction(() => {
+    const stale = db.prepare(`SELECT id, owner_pid FROM meetings WHERE ${staleWhere}`)
+      .all() as { id: number; owner_pid: number | null }[];
+    const dead = stale
+      .filter((r) => r.owner_pid === null || !ownerAlive(r.owner_pid, r.id))
+      .map((r) => r.id);
+    if (dead.length === 0) return 0;
+    const ids = dead.map(() => '?').join(', ');
     db.prepare(`
       UPDATE recordings SET status = 'failed'
-      WHERE status NOT IN ('done', 'transcribe_failed', 'no_audio', 'failed')
-        AND meeting_id IN (SELECT id FROM meetings WHERE ${staleWhere})
-    `).run();
-    return db.prepare(`UPDATE meetings SET status = 'failed' WHERE ${staleWhere}`).run().changes;
+      WHERE status NOT IN (${TERMINAL_RECORDING_SQL})
+        AND meeting_id IN (${ids})
+    `).run(...dead);
+    // Re-check staleness in the UPDATE itself so a row that heartbeated meanwhile is spared.
+    return db.prepare(`UPDATE meetings SET status = 'failed' WHERE id IN (${ids}) AND ${staleWhere}`)
+      .run(...dead).changes;
   });
   return recover();
 }
