@@ -12,6 +12,7 @@ import { log } from './log.js';
 import { installShutdownHandlers, registerShutdownHook, runShutdown } from './shutdown.js';
 import { closeDb } from './db.js';
 import { resumeTranscription } from './transcribe-resume.js';
+import { SyncSchedule, LAUNCH_TICK_MS } from './watch-clock.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -256,10 +257,10 @@ async function startWatcher(): Promise<void> {
   console.error(`  Max duration: ${config.maxDurationHours}h`);
   console.error(`  Bot patterns: ${config.botPatterns.length} known bots`);
   console.error(`  Never join: ${config.neverJoin.join(', ')}`);
-  console.error(`  Poll interval: ${config.pollMinutes}m`);
+  console.error(`  Calendar sync: every ${config.pollMinutes}m (join check: every ${LAUNCH_TICK_MS / 60000}m)`);
   console.error(`[mibot] Press Ctrl+C to stop\n`);
 
-  await syncCalendar();
+  const syncSchedule = new SyncSchedule(config.pollMinutes);
   const activeBots = new Set<number>();
   const MAX_CONCURRENT_BOTS = 3;
 
@@ -273,7 +274,14 @@ async function startWatcher(): Promise<void> {
     if (polling) { console.error('[mibot] Poll still running, skipping this tick'); return; }
     polling = true;
     try {
-      await syncCalendar();
+      // Wave 9-G: calendar sync on its own (pollMinutes) cadence; everything below runs every
+      // tick. Isolated in its own try: a failing calendar CLI used to throw out of the whole
+      // poll and block joining meetings that were already known.
+      const now = Date.now();
+      if (syncSchedule.due(now)) {
+        syncSchedule.markSynced(now);
+        try { await syncCalendar(); } catch (err) { console.error(`[mibot] Calendar sync error: ${(err as Error).message}`); }
+      }
 
       // D7: retire meetings whose window lapsed while the watcher was down (else they
       // sit `scheduled` forever and the table grows unbounded).
@@ -360,7 +368,7 @@ async function startWatcher(): Promise<void> {
   };
 
   await poll();
-  setInterval(poll, config.pollMinutes * 60 * 1000);
+  setInterval(poll, LAUNCH_TICK_MS);
   await new Promise(() => {}); // keep alive
 }
 
