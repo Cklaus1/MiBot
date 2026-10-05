@@ -135,6 +135,13 @@ export const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, 'recordings', 'transcribe_attempts', 'INTEGER DEFAULT 0');
     },
   },
+  {
+    version: 7,
+    name: 'is_organizer: per-event organizer flag (onlyOrganized)',
+    up: (db) => {
+      addColumnIfMissing(db, 'meetings', 'is_organizer', 'INTEGER');
+    },
+  },
 ];
 
 /**

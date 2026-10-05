@@ -98,6 +98,8 @@ export interface RawCalendarEvent {
   attendees?: Attendee[];
   is_recurring?: boolean;
   recurrence_id?: string;
+  /** Did I organize it? undefined when the provider didn't say. */
+  is_organizer?: boolean;
 }
 
 /** A raw event resolved to a concrete platform + join URL, ready for insertMeeting. */
@@ -139,13 +141,15 @@ export function normalizeEvents(events: RawCalendarEvent[]): NormalizedMeeting[]
       attendees: ev.attendees && ev.attendees.length > 0 ? ev.attendees : undefined,
       is_recurring: ev.is_recurring,
       recurrence_id: ev.recurrence_id,
+      is_organizer: ev.is_organizer,
     });
   }
   return out;
 }
 
 /** The joinable fields worth reconciling when a calendar event changes (CA2). */
-type MeetingDiff = Partial<Pick<NormalizedMeeting, 'start_time' | 'end_time' | 'join_url' | 'title'>>;
+type MeetingDiff = Partial<Pick<NormalizedMeeting, 'start_time' | 'end_time' | 'join_url' | 'title'>>
+  & { is_organizer?: number };
 
 /**
  * CA2: compute what changed on a still-scheduled meeting between the stored row and the freshly
@@ -162,6 +166,12 @@ export function diffMeetingFields(existing: Meeting, incoming: NormalizedMeeting
   if (!sameInstant(existing.end_time, incoming.end_time)) diff.end_time = incoming.end_time ?? undefined;
   if (existing.join_url !== incoming.join_url) diff.join_url = incoming.join_url;
   if (existing.title !== incoming.title) diff.title = incoming.title;
+  // Wave 9-E: also back-fills rows synced before the flag existed. Stored as 1/0 (SQLite has no
+  // boolean; better-sqlite3 rejects JS booleans).
+  if (incoming.is_organizer !== undefined) {
+    const flag = incoming.is_organizer ? 1 : 0;
+    if (existing.is_organizer !== flag) diff.is_organizer = flag;
+  }
   return Object.keys(diff).length > 0 ? diff : null;
 }
 
@@ -293,6 +303,7 @@ export function m365ToRaw(event: Record<string, unknown>): RawCalendarEvent {
     attendees: m365Attendees(event),
     is_recurring: event.type === 'occurrence' || event.type === 'seriesMaster',
     recurrence_id: (event.seriesMasterId as string) || undefined,
+    is_organizer: typeof event.isOrganizer === 'boolean' ? event.isOrganizer : undefined,
   };
 }
 
@@ -330,6 +341,8 @@ export function googleToRaw(event: Record<string, any>): RawCalendarEvent {
     attendees,
     is_recurring: !!event.recurringEventId,
     recurrence_id: event.recurringEventId || undefined,
+    // Google marks the calendar owner's own entries with `self: true`.
+    is_organizer: event.organizer ? event.organizer.self === true : undefined,
   };
 }
 
@@ -381,7 +394,7 @@ async function syncM365Calendar(): Promise<Meeting[]> {
     'calendar', 'view',
     '--start', now.toISOString(),
     '--end', end.toISOString(),
-    '--select', 'id,subject,start,end,location,onlineMeeting,body,attendees,organizer,type,seriesMasterId',
+    '--select', 'id,subject,start,end,location,onlineMeeting,body,attendees,organizer,type,seriesMasterId,isOrganizer',
     // Fix 3: without --all, ms365 makes ONE request and Graph pages calendarView (~10 events).
     // A busy day silently lost every meeting past page 1, and an event pushed onto page 2 then
     // looked "disappeared" to the CA2 cancellation step.

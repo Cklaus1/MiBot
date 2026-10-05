@@ -5,7 +5,7 @@ import {
   recoverStaleMeetings, sweepMissedMeetings, getMeeting, isPidAlive, claimOrphanedTranscriptions, type Meeting,
 } from './db.js';
 import { isTerminalMeetingStatus, type MeetingStatus } from './status.js';
-import { loadConfig, saveDefaultConfig, shouldSkipMeeting, fmtTime } from './config.js';
+import { loadConfig, saveDefaultConfig, meetingSkipReason, fmtTime } from './config.js';
 import { sendCommand, parseControlResponse } from './control.js';
 import { safeParseArray, parseJoinArgs } from './cli.js';
 import { log } from './log.js';
@@ -268,6 +268,7 @@ async function startWatcher(): Promise<void> {
   // two calendar syncs. Skip a tick while the previous one is in flight.
   let polling = false;
   let resumingTranscriptions = false;
+  const skipLogged = new Set<number>();
   const poll = async () => {
     if (polling) { console.error('[mibot] Poll still running, skipping this tick'); return; }
     polling = true;
@@ -325,9 +326,14 @@ async function startWatcher(): Promise<void> {
           break;
         }
 
-        // Apply skip rules
-        if (shouldSkipMeeting(meeting.title)) {
-          console.error(`[mibot] Skipping (title filter): ${meeting.title}`);
+        // Apply skip rules (neverJoin, onlyOrganized, minAttendees). Logged once per meeting:
+        // a meeting stays joinable until it ends, so it's re-evaluated every tick.
+        const skip = meetingSkipReason(meeting, config);
+        if (skip) {
+          if (!skipLogged.has(meeting.id)) {
+            skipLogged.add(meeting.id);
+            console.error(`[mibot] Skipping (${skip}): ${meeting.title}`);
+          }
           continue;
         }
 

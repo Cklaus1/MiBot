@@ -95,6 +95,8 @@ export interface Meeting {
   next_join_at: string | null;
   /** PID of the process running this meeting's bot; recovery only fails rows whose owner is gone. */
   owner_pid: number | null;
+  /** 1 if the calendar says I organized it, 0 if not, null if unknown (onlyOrganized). */
+  is_organizer: number | null;
   status: string;
   created_at: string;
 }
@@ -128,6 +130,7 @@ export function insertMeeting(m: {
   attendees?: Attendee[];
   is_recurring?: boolean;
   recurrence_id?: string;
+  is_organizer?: boolean;
 }): Meeting {
   const db = getDb();
   // AR6: stamp heartbeat at insert so a freshly-created meeting is immediately "live".
@@ -137,8 +140,8 @@ export function insertMeeting(m: {
   const stmt = db.prepare(`
     INSERT INTO meetings (title, platform, join_url, start_time, end_time,
       calendar_event_id, organizer, organizer_email, location, description,
-      attendees, is_recurring, recurrence_id, heartbeat)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      attendees, is_recurring, recurrence_id, heartbeat, is_organizer)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT DO NOTHING
   `);
   const result = stmt.run(
@@ -147,6 +150,7 @@ export function insertMeeting(m: {
     m.location ?? null, m.description ?? null,
     m.attendees ? JSON.stringify(m.attendees) : null,
     m.is_recurring ? 1 : 0, m.recurrence_id ?? null, new Date().toISOString(),
+    m.is_organizer === undefined ? null : m.is_organizer ? 1 : 0,
   );
   if (result.changes === 0 && m.calendar_event_id) {
     // A concurrent insert won the race; return the existing row rather than a null lookup.
@@ -172,7 +176,7 @@ const MEETING_COLUMNS = new Set([
   'title', 'platform', 'join_url', 'start_time', 'end_time', 'actual_start', 'actual_end',
   'calendar_event_id', 'organizer', 'organizer_email', 'location', 'description',
   'attendees', 'is_recurring', 'recurrence_id', 'status', 'participants', 'speaker_timeline',
-  'heartbeat', 'owner_pid',
+  'heartbeat', 'owner_pid', 'is_organizer',
 ]);
 
 export function updateMeeting(id: number, updates: Record<string, unknown>): void {

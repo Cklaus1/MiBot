@@ -262,10 +262,53 @@ export function fmtTime(dateStr: string): string {
 }
 
 /** Check if a meeting title matches "never join" patterns. */
+/**
+ * Wave 9-E: people on the invite — attendees plus the organizer, deduplicated by email
+ * (case-insensitive; by name when there's no email). Graph's attendee list EXCLUDES the
+ * organizer while Google's includes them, so a raw attendee count would make
+ * `minAttendees: 3` skip a 3-person Graph meeting.
+ */
+export function attendeeHeadcount(m: { attendees: string | null; organizer_email: string | null }): number {
+  const people = new Set<string>();
+  let list: unknown = [];
+  try { list = m.attendees ? JSON.parse(m.attendees) : []; } catch { list = []; }
+  if (Array.isArray(list)) {
+    for (const a of list) {
+      const key = (a?.email || a?.name || '').toString().trim().toLowerCase();
+      if (key) people.add(key);
+    }
+  }
+  if (m.organizer_email) people.add(m.organizer_email.trim().toLowerCase());
+  return people.size;
+}
+
+/**
+ * Why the watcher should NOT join this meeting, or null to join it. Wave 9-E: `onlyOrganized`
+ * and `minAttendees` were validated and documented but never read, so every meeting was joined.
+ * onlyOrganized is strict — an unknown organizer flag is skipped, because the setting says ONLY.
+ */
+export function meetingSkipReason(
+  m: { title: string; attendees: string | null; organizer_email: string | null; is_organizer: number | null },
+  config: Pick<MiBotConfig, 'neverJoin' | 'onlyOrganized' | 'minAttendees'> = loadConfig(),
+): string | null {
+  if (titleMatchesNeverJoin(m.title, config.neverJoin)) return 'title filter';
+  if (config.onlyOrganized && m.is_organizer !== 1) {
+    return m.is_organizer === 0 ? 'organized by someone else (onlyOrganized)' : 'organizer unknown (onlyOrganized)';
+  }
+  if (config.minAttendees > 0) {
+    const n = attendeeHeadcount(m);
+    if (n < config.minAttendees) return `${n} attendees < minAttendees ${config.minAttendees}`;
+  }
+  return null;
+}
+
 export function shouldSkipMeeting(title: string): boolean {
-  const config = loadConfig();
+  return titleMatchesNeverJoin(title, loadConfig().neverJoin);
+}
+
+function titleMatchesNeverJoin(title: string, neverJoin: string[]): boolean {
   const lower = title.toLowerCase();
-  return config.neverJoin.some(pattern => {
+  return neverJoin.some(pattern => {
     try {
       return new RegExp(pattern, 'i').test(lower);
     } catch {
