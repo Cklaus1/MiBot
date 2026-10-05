@@ -178,3 +178,34 @@
 - **Execute in-page scripts under test instead of string-matching them.** The late-joiner bug was
   an interaction between two script strings that no grep-style test could see. A vm sandbox with
   fakes that fail like the real API (connect(undefined) throws) reproduced it in one assertion.
+
+## Wave 9 — "fix all" (12 items)
+
+- **Liveness is a property of the process, not of a timestamp.** A stale heartbeat was treated
+  as death; a host suspend stalls every timer, so live bots were killed. Record WHO owns the
+  work (owner pid) and ask whether that owner is alive; let the component that tracks its own
+  workers vouch for them.
+
+- **Never trust a tool's exit code as proof its output is complete.** ffmpeg's concat exited 0
+  with an unreadable segment, and the first version then deleted the segments. Before deleting
+  inputs, verify the output (decoded length ≈ sum of inputs) and delete only what is verifiably
+  inside it.
+
+- **Cursor-based reads make retries idempotent.** "read → append → ack(count)" duplicated data
+  whenever the ack failed. Sequence numbers plus a node-side cursor advanced on durable write
+  make a failed ack free. The general rule: advance your own position on durable success, and
+  never depend on the remote side's acknowledgement for correctness.
+
+- **One timer for two jobs couples their failure modes.** Calendar sync and the join check
+  shared a timer AND a try block, so a slow interval delayed joins and a failing calendar CLI
+  blocked joining meetings already known. Separate cadences, separate error handling.
+
+- **Watch the test's evaluation order.** `expect(query()).toContain(insert().id)` runs the query
+  first. A red test is only evidence once you've confirmed it fails for the reason you think.
+
+- **Destructive features ship opt-in.** Retention deletes recordings only when the operator sets
+  retentionDays; transcripts never; never outside the recordings dir. Default-on deletion of
+  user data is a decision for the user, not a sensible default.
+
+- **Avoid side effects while verifying.** A dry run that opens the production DB would apply
+  pending migrations. Verify against a copy.

@@ -232,3 +232,13 @@ Order: data-loss first, then correctness, then hygiene. One commit each, test-fi
 - [x] L. Retention → `mibot prune [--dry-run]` + config; logs pruned by default (30d),
       recordings/screenshots/rows only when `retentionDays` is set (default off: never
       delete recordings without an explicit setting).
+
+### Wave 9 review
+All 12 items (A–L) done, one commit each, test-first. 468 → 546 tests; typecheck + build clean.
+Verified beyond unit tests: concat vs byte-append of two live webm streams (7.02s vs 3s);
+real ms365/audioscript/ffmpeg through the new runCli; second `mibot start` refused by the built
+CLI; `mibot prune --dry-run` against a copy of the production DB.
+Not verified live: suspend/resume recovery, crash-resume of a real transcription, a mid-meeting
+reload producing segments, onlyOrganized against real calendars (needs `isOrganizer` from Graph).
+Schema: migrations v5 (owner_pid), v6 (transcribe_attempts), v7 (is_organizer) — additive; they
+apply to the production DB the next time any mibot command opens it.
