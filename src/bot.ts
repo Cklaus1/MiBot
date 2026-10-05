@@ -1,4 +1,7 @@
-import { drainAudioOnce, type DrainDeps } from './audio-drain.js';
+import {
+  drainAudioOnce, DrainState, buildReadExpr, buildAckExpr, appendToSegment, assembleSegments,
+  type DrainDeps, type ReadResult,
+} from './audio-drain.js';
 import { type Browser as PWBrowser } from 'playwright';
 import path from 'path';
 import os from 'os';
@@ -427,35 +430,9 @@ export const AUDIO_ELEMENT_CAPTURE = `
   })()
 `;
 
-// AU8/DRAIN, camofox side. The Playwright path (webrtc-capture.ts) reads NON-destructively
-// and only removes chunks after the bytes are on disk; this path used to `splice(0)` in-page
-// BEFORE the payload had crossed the REST boundary, so any failed transfer or throwing
-// appendFileSync (ENOSPC) permanently lost that 5s window. These two expressions are the
-// read and ack halves of the same two-phase protocol; drainAudioOnce sequences them.
-const AUDIO_READ_EXPR = `
-  (() => {
-    const flushed = window.__mibotFlushedChunks;
-    if (!flushed || flushed.length === 0) return { b64: '', count: 0 };
-    const count = flushed.length;
-    const snapshot = flushed.slice(0, count); // copy — NOT splice
-    return new Promise(resolve => {
-      const blob = new Blob(snapshot, { type: 'audio/webm' });
-      const reader = new FileReader();
-      reader.onload = () => resolve({ b64: reader.result.split(',')[1] || '', count });
-      reader.onerror = () => resolve({ b64: '', count: 0 }); // AU7: never hang on read failure
-      reader.onabort = () => resolve({ b64: '', count: 0 });
-      reader.readAsDataURL(blob);
-    });
-  })()
-`;
-
-const audioAckExpr = (count: number) => `
-  (() => {
-    const flushed = window.__mibotFlushedChunks;
-    if (flushed) flushed.splice(0, ${count});
-    return true;
-  })()
-`;
+// AU8/DRAIN, camofox side: the read and ack halves are the shared in-page expressions in
+// audio-drain.ts (buildReadExpr / buildAckExpr) — sequence-numbered and recorder-aware (Wave
+// 9-C), the same protocol the Playwright path runs. Camofox's /eval takes the same strings.
 
 // AU3 tail capture, camofox side. The old final flush just concatenated whatever happened to
 // be in the buffers — it never called requestData()/stop(), so the last partial segment (up to
@@ -504,20 +481,20 @@ const CAMOFOX_READ_TIMEOUT_MS = 15000;
 /** DRAIN deps for the camofox page — the read/append/ack triple drainAudioOnce sequences. */
 export function camofoxDrainDeps(page: CamofoxPage, outputPath: string): DrainDeps {
   return {
-    readEncoded: async () => {
-      const r = await page.eval(AUDIO_READ_EXPR) as { b64?: string; count?: number } | null;
-      return { b64: r?.b64 ?? '', count: r?.count ?? 0 };
+    readEncoded: async (fromSeq, knownRecId) => {
+      const r = await page.eval(buildReadExpr(fromSeq, knownRecId)) as Partial<ReadResult> | null;
+      return { b64: r?.b64 ?? '', count: r?.count ?? 0, startSeq: r?.startSeq ?? fromSeq, recId: r?.recId ?? '' };
     },
-    append: (buf) => fs.appendFileSync(outputPath, buf),
-    ack: async (count) => { await page.eval(audioAckExpr(count)); },
+    append: appendToSegment(outputPath),
+    ack: async (uptoSeq, recId) => { await page.eval(buildAckExpr(uptoSeq, recId)); },
     timeoutMs: CAMOFOX_READ_TIMEOUT_MS,
   };
 }
 
 /** Flush captured audio chunks to disk via the DRAIN protocol. Returns bytes on disk. */
-async function flushCamofoxAudio(page: CamofoxPage, outputPath: string): Promise<number> {
+async function flushCamofoxAudio(page: CamofoxPage, outputPath: string, state: DrainState): Promise<number> {
   try {
-    await drainAudioOnce(camofoxDrainDeps(page, outputPath));
+    await drainAudioOnce(camofoxDrainDeps(page, outputPath), state);
   } catch (err) {
     // append threw (e.g. ENOSPC): ack was skipped, so the page buffer still holds the
     // window and the next tick retries it. Nothing is lost by returning here.
@@ -526,18 +503,20 @@ async function flushCamofoxAudio(page: CamofoxPage, outputPath: string): Promise
   return fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
 }
 
-/** AU3: stop the recorder, fold in the tail, then drain what's left exactly once. */
-export async function finalizeCamofoxAudio(page: CamofoxPage, outputPath: string): Promise<boolean> {
+/** AU3: stop the recorder, fold in the tail, drain what's left, then join any segments a
+ *  mid-meeting reload produced (Wave 9-C). */
+export async function finalizeCamofoxAudio(page: CamofoxPage, outputPath: string, state: DrainState): Promise<boolean> {
   try {
     await page.eval(AUDIO_STOP_AND_FOLD_EXPR);
   } catch { /* recorder may already be gone — still try to drain what's buffered */ }
+  let appended = false;
   try {
-    const res = await drainAudioOnce(camofoxDrainDeps(page, outputPath));
-    return res.appended;
+    appended = (await drainAudioOnce(camofoxDrainDeps(page, outputPath), state)).appended;
   } catch (err) {
     log.warn(`Final audio drain failed: ${(err as Error).message}`);
-    return false;
   }
+  await assembleSegments(outputPath, state.segmentCount);
+  return appended;
 }
 
 // ── Camofox monitoring loop ───────────────────────────────────────────
@@ -597,6 +576,7 @@ async function monitorCamofoxMeeting(
   const screenshotDir = path.join(RECORDINGS_DIR, `screenshots-${meetingId}`);
   if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir, { recursive: true });
   const webrtcAudioPath = webrtcAudioPathFor(audioPath);
+  const audioDrain = new DrainState(); // sequence/segment bookkeeping for this capture (Wave 9-C)
   let lastAudioFlush = 0;
 
   while (Date.now() - startTime < maxMs) {
@@ -771,7 +751,7 @@ async function monitorCamofoxMeeting(
     // Flush audio every 15 seconds
     if (Date.now() - lastAudioFlush >= 15000) {
       try {
-        const totalBytes = await flushCamofoxAudio(page, webrtcAudioPath);
+        const totalBytes = await flushCamofoxAudio(page, webrtcAudioPath, audioDrain);
         if (totalBytes > 0) {
           console.error(`[mibot] 🎙️ Audio flush: ${(totalBytes / 1024).toFixed(0)} KB total`);
         }
@@ -795,7 +775,7 @@ async function monitorCamofoxMeeting(
   console.error('[mibot] Leaving meeting...');
 
   // Final audio drain — AU3 stop-and-drain, so the meeting's last partial segment lands.
-  await finalizeCamofoxAudio(page, webrtcAudioPath);
+  await finalizeCamofoxAudio(page, webrtcAudioPath, audioDrain);
 
   // Copy WebRTC audio to main audio path
   if (fs.existsSync(webrtcAudioPath) && fs.statSync(webrtcAudioPath).size > 1000) {

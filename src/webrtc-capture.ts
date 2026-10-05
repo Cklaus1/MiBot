@@ -1,6 +1,9 @@
 import type { Page, BrowserContext, Frame } from 'playwright';
 import fs from 'fs';
-import { drainAudioOnce } from './audio-drain.js';
+import {
+  drainAudioOnce, DrainState, buildReadExpr, buildAckExpr, appendToSegment, assembleSegments,
+  type ReadResult,
+} from './audio-drain.js';
 
 /**
  * FA/R4 — the ONE WebRTC audio-capture hook, self-contained so it can be installed via
@@ -81,76 +84,66 @@ export async function installAudioCapture(context: BrowserContext): Promise<void
   console.error('[mibot] WebRTC audio capture hook installed on context (all frames)');
 }
 
-// ── Drain protocol (DRAIN: AU3/AU7/AU8/AU12) ────────────────────────────
+// ── Drain protocol (DRAIN: AU3/AU7/AU8/AU12, Wave 9-C) ───────────────────
 //
-// The in-page read is NON-destructive: it peeks and encodes the pending flushed chunks but
-// leaves them in `__mibotFlushedChunks`. Node appends the bytes to disk and only THEN calls the
-// ack step, which removes exactly the chunks that were read (`splice(0, count)` — new chunks that
-// arrived mid-transfer sit after them and survive). If the append throws (ENOSPC) the ack never
-// runs, so the window is retried next tick instead of being lost (AU8). The FileReader carries an
-// onerror/onabort so a read failure resolves to '' rather than hanging frame.evaluate (AU7).
+// The in-page read/ack are the shared expressions in audio-drain.ts (also used by the camofox
+// path): a non-destructive, sequence-numbered read from the first chunk node still needs, an
+// append to disk, then an ack that drops chunks below the persisted sequence. A failed append
+// skips the ack (retried next tick, AU8); a failed ack costs nothing (the next read starts past
+// it). A recorder restart writes a new segment, joined at the end. The FileReader carries
+// onerror/onabort so a read failure resolves empty rather than hanging evaluate (AU7).
 
 const READ_TIMEOUT_MS = 10000;
 
-/** Peek+encode pending flushed chunks in one frame WITHOUT removing them. */
-async function readPendingChunks(frame: Frame): Promise<{ b64: string; count: number }> {
-  return frame.evaluate(() => {
-    const flushed = (window as any).__mibotFlushedChunks as Blob[] | undefined;
-    if (!flushed || flushed.length === 0) return { b64: '', count: 0 };
-    const count = flushed.length;
-    const snapshot = flushed.slice(0, count); // copy — do NOT splice (non-destructive read)
-    return new Promise<{ b64: string; count: number }>((resolve) => {
-      const blob = new Blob(snapshot, { type: 'audio/webm' });
-      const reader = new FileReader();
-      reader.onload = () => resolve({ b64: (reader.result as string).split(',')[1] || '', count });
-      reader.onerror = () => resolve({ b64: '', count: 0 }); // AU7: never hang on read failure
-      reader.onabort = () => resolve({ b64: '', count: 0 });
-      reader.readAsDataURL(blob);
-    });
-  });
-}
-
-/** Remove the first `count` (already-persisted) chunks from a frame's flushed buffer. */
-async function ackChunks(frame: Frame, count: number): Promise<void> {
-  await frame.evaluate((n) => {
-    const flushed = (window as any).__mibotFlushedChunks as Blob[] | undefined;
-    if (flushed) flushed.splice(0, n);
-  }, count);
+/**
+ * Drain state for one Playwright capture: sequence/segment bookkeeping (Wave 9-C) plus the frame
+ * we committed to. AU12 said "commit to the first frame with data" but the old loop re-picked a
+ * frame every tick, so two frames' streams could interleave into one file. Now the first frame
+ * that yields audio is locked in, and only released if it's detached.
+ */
+export class FrameDrain {
+  readonly state = new DrainState();
+  frame: Frame | null = null;
 }
 
 /** Drain one frame once via the two-phase protocol. Returns true if bytes were appended. */
-async function drainFrame(frame: Frame, outputPath: string): Promise<boolean> {
+async function drainFrame(frame: Frame, outputPath: string, drain: FrameDrain): Promise<boolean> {
   const result = await drainAudioOnce({
-    readEncoded: () => readPendingChunks(frame),
-    append: (buf) => fs.appendFileSync(outputPath, buf),
-    ack: (count) => ackChunks(frame, count),
+    readEncoded: (fromSeq, knownRecId) => frame.evaluate(buildReadExpr(fromSeq, knownRecId)) as Promise<ReadResult>,
+    append: appendToSegment(outputPath),
+    ack: async (uptoSeq, recId) => { await frame.evaluate(buildAckExpr(uptoSeq, recId)); },
     timeoutMs: READ_TIMEOUT_MS,
-  });
+  }, drain.state);
   return result.appended;
 }
 
+/** The frames to drain: the locked one if it's still attached, else every frame (once each). */
+function candidateFrames(page: Page, drain: FrameDrain): Frame[] {
+  if (drain.frame && !drain.frame.isDetached()) return [drain.frame];
+  drain.frame = null;
+  return [...new Set([page.mainFrame(), ...page.frames()])];
+}
+
 /**
- * Periodic flush during the meeting. Drains the FIRST frame that has pending audio (AU12: a
- * single meeting has one recorder frame; appending two frames' streams to one file yields
- * invalid webm, so we commit to the first frame with data rather than concatenating).
+ * Periodic flush during the meeting. Drains the locked frame, or — until one has produced audio
+ * — the first frame with data, which then becomes the locked frame (AU12).
  */
-export async function flushAudioToDisk(page: Page, outputPath: string): Promise<boolean> {
-  for (const frame of [page.mainFrame(), ...page.frames()]) {
+export async function flushAudioToDisk(page: Page, outputPath: string, drain: FrameDrain): Promise<boolean> {
+  for (const frame of candidateFrames(page, drain)) {
     try {
-      if (await drainFrame(frame, outputPath)) return true;
+      if (await drainFrame(frame, outputPath, drain)) { drain.frame = frame; return true; }
     } catch { /* AU11 logs at the audio.ts layer; keep trying other frames */ }
   }
   return false;
 }
 
 /**
- * AU3 — single stop-and-drain at meeting end. Stops the MediaRecorder, awaits its final
- * `ondataavailable` so the last ~0-6s tail lands in the buffer, moves it into the flushed buffer,
- * then drains. Without this the tail of every meeting was dropped.
+ * AU3 — single stop-and-drain at meeting end. Stops every frame's MediaRecorder and awaits its
+ * final `ondataavailable` so the last ~0-6s tail lands in the buffer, drains the committed frame,
+ * then joins any segments a mid-meeting recorder restart produced (Wave 9-C).
  */
-export async function finalizeAudioDrain(page: Page, outputPath: string): Promise<boolean> {
-  let any = false;
-  for (const frame of [page.mainFrame(), ...page.frames()]) {
+export async function finalizeAudioDrain(page: Page, outputPath: string, drain: FrameDrain): Promise<boolean> {
+  for (const frame of new Set([page.mainFrame(), ...page.frames()])) {
     try {
       // Stop the recorder and fold any un-flushed tail into __mibotFlushedChunks.
       await frame.evaluate(() => {
@@ -172,9 +165,15 @@ export async function finalizeAudioDrain(page: Page, outputPath: string): Promis
           }
         });
       });
-      if (await drainFrame(frame, outputPath)) any = true;
     } catch { /* best-effort per frame */ }
   }
+  let any = false;
+  for (const frame of candidateFrames(page, drain)) {
+    try {
+      if (await drainFrame(frame, outputPath, drain)) { drain.frame = frame; any = true; break; }
+    } catch { /* best-effort per frame */ }
+  }
+  await assembleSegments(outputPath, drain.state.segmentCount);
   return any;
 }
 

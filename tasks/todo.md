@@ -216,7 +216,7 @@ Order: data-loss first, then correctness, then hygiene. One commit each, test-fi
       recovery skips rows whose owner process is still alive. (migration v5)
 - [x] B. Crash mid-transcription → recovery leaves `processing` meetings whose recording is
       `recorded` alone; the watcher claims and re-transcribes them (max 3 attempts).
-- [ ] C. webm stream splicing + duplicate-on-failed-ack → in-page recorder id + chunk sequence
+- [x] C. webm stream splicing + duplicate-on-failed-ack → in-page recorder id + chunk sequence
       numbers; node reads from its persisted seq (no dupes) and starts a new segment when the
       recorder id changes; segments joined with ffmpeg concat at the end.
 - [ ] D. Speaker auto-label → use only clusters present in THIS meeting's transcript, rank by

@@ -2,7 +2,7 @@ import type { Page } from 'playwright';
 import fs from 'fs';
 import { execFile } from 'child_process';
 import { startRecording, stopRecording } from './recorder.js';
-import { flushAudioToDisk, finalizeAudioDrain } from './webrtc-capture.js';
+import { flushAudioToDisk, finalizeAudioDrain, FrameDrain } from './webrtc-capture.js';
 
 /**
  * R2 (AR3) — a per-bot audio capture session.
@@ -191,12 +191,14 @@ export async function hasUsableAudio(p: string): Promise<boolean> {
 
 /** Production factory: a CaptureSession wired to the real recorder/webrtc/fs for a given page. */
 export function createCaptureSession(page: Page, audioPath: string): CaptureSession {
+  // One drain state per capture: sequence/segment bookkeeping + the committed frame (Wave 9-C).
+  const drain = new FrameDrain();
   // AU11: the flush catch used to be silent — the exact reason P0/P1 silent-capture failures
   // stayed invisible. Log the first failure and every 4th consecutive one thereafter.
   let consecutiveFailures = 0;
   const loggedFlush = async (p: string): Promise<boolean> => {
     try {
-      const ok = await flushAudioToDisk(page, p);
+      const ok = await flushAudioToDisk(page, p, drain);
       consecutiveFailures = 0;
       return ok;
     } catch (err) {
@@ -212,7 +214,7 @@ export function createCaptureSession(page: Page, audioPath: string): CaptureSess
     audioPath,
     startRecording: (p) => { const ff = startRecording(p); return { stop: () => stopRecording(ff) }; },
     flush: loggedFlush,
-    finalFlush: (p) => finalizeAudioDrain(page, p),
+    finalFlush: (p) => finalizeAudioDrain(page, p, drain),
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (h) => clearInterval(h),
     duration: (p) => probeDurationSec(p),
