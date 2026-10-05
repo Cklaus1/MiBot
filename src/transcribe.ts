@@ -106,7 +106,7 @@ export async function transcribe(
     // nonexistent db).
     const speakerDbPath = path.join(outputDir, 'speaker_identities.json');
     if (fs.existsSync(speakerDbPath)) {
-      await autoLabelSpeakers(speakerDbPath, participants, speakerTimeline, audioDir);
+      await autoLabelSpeakers(speakerDbPath, transcriptJson, participants, audioDir);
     }
   } catch (err) {
     const stderr = err instanceof CliError ? err.stderr : '';
@@ -163,69 +163,89 @@ export async function transcribe(
 }
 
 /**
- * Auto-label speaker clusters using meeting participant data.
- *
- * Strategy:
- * 1. If only 1 unknown speaker and 1 human participant -> direct match
- * 2. If speaker timeline from MiBot overlaps with diarization segments -> match by timing
- * 3. Otherwise, leave for manual review
+ * Talk seconds per speaker cluster IN THIS MEETING, from audioscript's transcript JSON
+ * (segments carry `speaker_cluster_id`; `diarization.speakers_resolved` lists every resolved
+ * cluster). Empty when the transcript has no diarization.
  */
+export function meetingSpeakerTalk(transcript: any): Map<string, number> {
+  const talk = new Map<string, number>();
+  for (const r of transcript?.diarization?.speakers_resolved ?? []) {
+    if (typeof r?.speaker_cluster_id === 'string') talk.set(r.speaker_cluster_id, talk.get(r.speaker_cluster_id) ?? 0);
+  }
+  for (const seg of transcript?.segments ?? []) {
+    const id = seg?.speaker_cluster_id;
+    if (typeof id !== 'string') continue;
+    const dur = Math.max(0, Number(seg.end) - Number(seg.start)) || 0;
+    talk.set(id, (talk.get(id) ?? 0) + dur);
+  }
+  return talk;
+}
+
+export type LabelChoice =
+  | { clusterId: string; name: string }
+  | { skip: 'no-diarization' | 'all-labeled' | 'roster-incomplete' | 'no-candidate' | 'ambiguous' };
+
+/**
+ * Wave 9-D: decide which (if any) speaker cluster to name. Pure.
+ *
+ * The identity DB (speaker_identities.json) is SHARED and cumulative across meetings. The old
+ * logic picked among every unlabeled identity in it and ranked by lifetime call counts, so this
+ * meeting's one name could land on a stranger from another call — and a wrong name then
+ * propagates to every later transcript. Rules now, each preferring "no label" to a guess:
+ *  - only clusters that spoke in THIS meeting are eligible; no diarization → no label
+ *  - more voices than humans on the roster → the roster scrape missed people → no label
+ *  - a name already on another voice in this meeting isn't a candidate
+ *  - exactly one candidate name must remain
+ *  - several unlabeled voices → only the clearly dominant one (≥2× the next) in this meeting
+ */
+export function chooseSpeakerLabel(input: {
+  identities: Record<string, { canonical_name?: string | null }>;
+  talk: Map<string, number>;
+  participants: Participant[];
+}): LabelChoice {
+  const { identities, talk, participants } = input;
+  if (talk.size === 0) return { skip: 'no-diarization' };
+  const present = [...talk.keys()];
+  const unlabeled = present.filter((id) => identities[id] && !identities[id].canonical_name);
+  if (unlabeled.length === 0) return { skip: 'all-labeled' };
+
+  const humans = participants.filter((p) => !p.is_bot);
+  if (present.length > humans.length) return { skip: 'roster-incomplete' };
+
+  const taken = new Set(present.map((id) => identities[id]?.canonical_name).filter(Boolean));
+  const spoke = humans.filter((p) => p.spoke);
+  const pool = (spoke.length > 0 ? spoke : humans).map((p) => p.name).filter((n) => !taken.has(n));
+  if (pool.length === 0) return { skip: 'no-candidate' };
+  if (pool.length > 1) return { skip: 'ambiguous' };
+  const name = pool[0];
+
+  if (unlabeled.length === 1) return { clusterId: unlabeled[0], name };
+  const secs = (id: string) => talk.get(id) ?? 0;
+  const [top, next] = [...unlabeled].sort((a, b) => secs(b) - secs(a));
+  return secs(top) > 0 && secs(top) >= 2 * secs(next) ? { clusterId: top, name } : { skip: 'ambiguous' };
+}
+
+/** Auto-label at most one speaker cluster of this meeting (see chooseSpeakerLabel). */
 export async function autoLabelSpeakers(
   speakerDbPath: string,
+  transcriptJsonPath: string | null,
   participants: Participant[],
-  speakerTimeline: SpeakerSegment[],
   cwd: string,
 ): Promise<void> {
   try {
     const db = JSON.parse(fs.readFileSync(speakerDbPath, 'utf8'));
-    const identities = db.identities || {};
-
-    // Find unlabeled clusters
-    const unlabeled = Object.entries(identities)
-      .filter(([_, v]: [string, any]) => !v.canonical_name)
-      .map(([k]: [string, any]) => k);
-
-    if (unlabeled.length === 0) {
-      console.error('[mibot] All speakers already labeled');
+    const transcript = transcriptJsonPath ? JSON.parse(fs.readFileSync(transcriptJsonPath, 'utf8')) : null;
+    const choice = chooseSpeakerLabel({
+      identities: db.identities || {},
+      talk: meetingSpeakerTalk(transcript),
+      participants,
+    });
+    if ('skip' in choice) {
+      console.error(`[mibot] Auto-label skipped (${choice.skip}) — manual review if needed`);
       return;
     }
-
-    // Get human participants (not bots, and who actually spoke if we have that data)
-    const humans = participants.filter(p => !p.is_bot);
-    const speakers = humans.filter(p => p.spoke);
-    const candidateNames = (speakers.length > 0 ? speakers : humans).map(p => p.name);
-
-    console.error(`[mibot] Auto-label: ${unlabeled.length} unknown cluster(s), ${candidateNames.length} candidate name(s)`);
-
-    // Strategy 1: Direct match if counts align
-    if (unlabeled.length === 1 && candidateNames.length === 1) {
-      const clusterId = unlabeled[0];
-      const name = candidateNames[0];
-      console.error(`[mibot] Auto-labeling: ${clusterId} → ${name}`);
-      await labelSpeaker(clusterId, name, speakerDbPath, cwd);
-      return;
-    }
-
-    // Strategy 2: Match by speaker timeline overlap
-    if (speakerTimeline.length > 0 && unlabeled.length > 0 && candidateNames.length > 0) {
-      console.error(`[mibot] Speaker timeline has ${speakerTimeline.length} segments — timing-based matching available for future use`);
-    }
-
-    // Strategy 3: If only 1 candidate name and multiple clusters, label the dominant one
-    if (candidateNames.length === 1 && unlabeled.length > 1) {
-      let bestCluster = unlabeled[0];
-      let bestCount = 0;
-      for (const cid of unlabeled) {
-        const info = identities[cid];
-        const count = info.total_calls || info.call_count || 1;
-        if (count > bestCount) { bestCount = count; bestCluster = cid; }
-      }
-      console.error(`[mibot] Auto-labeling dominant cluster: ${bestCluster} → ${candidateNames[0]}`);
-      await labelSpeaker(bestCluster, candidateNames[0], speakerDbPath, cwd);
-      return;
-    }
-
-    console.error(`[mibot] Could not auto-label: ${unlabeled.length} clusters, ${candidateNames.length} names — manual review needed`);
+    console.error(`[mibot] Auto-labeling: ${choice.clusterId} → ${choice.name}`);
+    await labelSpeaker(choice.clusterId, choice.name, speakerDbPath, cwd);
   } catch (err) {
     console.error(`[mibot] Auto-label error: ${(err as Error).message}`);
   }

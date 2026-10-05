@@ -219,7 +219,7 @@ Order: data-loss first, then correctness, then hygiene. One commit each, test-fi
 - [x] C. webm stream splicing + duplicate-on-failed-ack → in-page recorder id + chunk sequence
       numbers; node reads from its persisted seq (no dupes) and starts a new segment when the
       recorder id changes; segments joined with ffmpeg concat at the end.
-- [ ] D. Speaker auto-label → use only clusters present in THIS meeting's transcript, rank by
+- [x] D. Speaker auto-label → use only clusters present in THIS meeting's transcript, rank by
       this meeting's talk time; no diarization info → don't label.
 - [ ] E. `onlyOrganized` / `minAttendees` → store is_organizer (Graph isOrganizer, Google
       organizer.self); enforce both in the watcher's skip rules.
