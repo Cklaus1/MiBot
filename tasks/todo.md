@@ -242,3 +242,8 @@ Not verified live: suspend/resume recovery, crash-resume of a real transcription
 reload producing segments, onlyOrganized against real calendars (needs `isOrganizer` from Graph).
 Schema: migrations v5 (owner_pid), v6 (transcribe_attempts), v7 (is_organizer) — additive; they
 apply to the production DB the next time any mibot command opens it.
+
+## Wave 10 — spec drafted (awaiting OQ answers)
+Spec: tasks/spec-wave10.md — #1 failure diagnostics, #2 consent + stop, #3/#4 notifier (digest +
+alerts), #5 per-meeting control, #6 self-test, #7 search. 11 open questions (§7), each with a
+recommended default. Build order #1 → #2 → #3+#4 → #5 → #6 → #7.

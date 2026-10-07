@@ -75,3 +75,12 @@
 - [ARCH] N1 transcription-provider interface, N2 platform-plugin registry, N3 signal event
   bus, N4 DI framework, N5 DB repository/ORM — explicitly rejected as YAGNI
   (architecture-spec NEGATIVES). Listed so they are not "re-discovered" as new ideas.
+
+## Product backlog — Medium (from the 2026-10-07 PM review; see tasks/spec-wave10.md §8)
+- Push extracted action items / decisions to a task tool.
+- `mibot speakers` flow to name unknown speaker clusters (auto-label now leaves ambiguous ones unnamed).
+- Web dashboard: browse meetings, playback, failures.
+- Shared/delegate M365 calendars and non-primary Google calendars.
+- Webex and Slack huddles.
+- Export to Markdown/PDF/Google Docs/Notion.
+- Live in-meeting notes.
