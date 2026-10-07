@@ -210,6 +210,14 @@ export const MIGRATIONS: Migration[] = [
                WHERE status IN ('done', 'failed', 'missed', 'cancelled') AND notified_at IS NULL`);
     },
   },
+  {
+    version: 11,
+    name: 'per-meeting control: user_skip + leave_requested_at (Wave 10 #5)',
+    up: (db) => {
+      addColumnIfMissing(db, 'meetings', 'user_skip', 'INTEGER DEFAULT 0');
+      addColumnIfMissing(db, 'meetings', 'leave_requested_at', 'TEXT');
+    },
+  },
 ];
 
 /**

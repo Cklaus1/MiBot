@@ -62,6 +62,12 @@ export interface MiBotConfig {
 
   /** Wave 10 #3/#4: where post-meeting notes and ALERTS.md are written. */
   notify: NotifyConfig;
+
+  /** Wave 10 #5: this token in an event's title or description skips that meeting. */
+  skipKeyword: string;
+
+  /** Wave 10 #5: this token forces a join past onlyOrganized / minAttendees. */
+  forceKeyword: string;
 }
 
 export interface NotifyConfig {
@@ -121,6 +127,8 @@ export const DEFAULTS: MiBotConfig = {
   consentStopKeyword: DEFAULT_STOP_KEYWORD,
   botNameSuffix: ' (recording)',
   notify: { folder: '~/MiBot Notes', digest: 'each', alerts: true },
+  skipKeyword: '[no-bot]',
+  forceKeyword: '[bot]',
 };
 
 /** Numeric fields and their valid [min, max] ranges (inclusive). Anything outside the
@@ -171,6 +179,8 @@ export function validateConfig(input: Partial<MiBotConfig>): MiBotConfig {
   if (typeof raw.consentMessage === 'string') out.consentMessage = raw.consentMessage;
   if (typeof raw.consentStopKeyword === 'string' && raw.consentStopKeyword.trim() !== '') out.consentStopKeyword = raw.consentStopKeyword.trim();
   if (typeof raw.botNameSuffix === 'string') out.botNameSuffix = raw.botNameSuffix;
+  if (typeof raw.skipKeyword === 'string' && raw.skipKeyword.trim() !== '') out.skipKeyword = raw.skipKeyword.trim();
+  if (typeof raw.forceKeyword === 'string' && raw.forceKeyword.trim() !== '') out.forceKeyword = raw.forceKeyword.trim();
   // notify: an object; each field validated on its own, falling back to its default.
   out.notify = { ...DEFAULTS.notify };
   if (raw.notify && typeof raw.notify === 'object' && !Array.isArray(raw.notify)) {
@@ -352,10 +362,20 @@ export function attendeeHeadcount(m: { attendees: string | null; organizer_email
  * onlyOrganized is strict — an unknown organizer flag is skipped, because the setting says ONLY.
  */
 export function meetingSkipReason(
-  m: { title: string; attendees: string | null; organizer_email: string | null; is_organizer: number | null },
-  config: Pick<MiBotConfig, 'neverJoin' | 'onlyOrganized' | 'minAttendees'> = loadConfig(),
+  m: {
+    title: string; description?: string | null; attendees: string | null; organizer_email: string | null;
+    is_organizer: number | null; user_skip?: number | null;
+  },
+  config: Pick<MiBotConfig, 'neverJoin' | 'onlyOrganized' | 'minAttendees'> & Partial<Pick<MiBotConfig, 'skipKeyword' | 'forceKeyword'>> = loadConfig(),
 ): string | null {
+  // Wave 10 #5: explicit per-meeting choices first. A skip always wins over a force.
+  const text = `${m.title}\n${m.description ?? ''}`.toLowerCase();
+  const skipKw = config.skipKeyword ?? DEFAULTS.skipKeyword;
+  const forceKw = config.forceKeyword ?? DEFAULTS.forceKeyword;
+  if (m.user_skip === 1) return 'skipped by operator (mibot skip)';
+  if (skipKw && text.includes(skipKw.toLowerCase())) return `skip keyword ${skipKw}`;
   if (titleMatchesNeverJoin(m.title, config.neverJoin)) return 'title filter';
+  if (forceKw && text.includes(forceKw.toLowerCase())) return null; // overrides the filters below
   if (config.onlyOrganized && m.is_organizer !== 1) {
     return m.is_organizer === 0 ? 'organized by someone else (onlyOrganized)' : 'organizer unknown (onlyOrganized)';
   }

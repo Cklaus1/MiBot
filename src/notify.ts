@@ -118,6 +118,7 @@ export function enqueuePendingDigests(opts: { timezone: string; nowMs?: number; 
   const rows = db.prepare(`
     SELECT m.* FROM meetings m
     WHERE m.notified_at IS NULL AND m.status IN ('done', 'failed', 'missed')
+      AND COALESCE(m.failure_reason, '') != 'skipped'  -- intentionally not joined: no note (#5)
       -- Wait for transcription of the meeting's LATEST recording only: an earlier attempt's
       -- recording left non-terminal (old crash) must not block the note forever.
       AND COALESCE((SELECT r.status FROM recordings r WHERE r.meeting_id = m.id ORDER BY r.id DESC LIMIT 1), '')

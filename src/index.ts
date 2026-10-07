@@ -2,7 +2,8 @@ import { joinAndRecord, detectPlatform, RECORDINGS_DIR } from './bot.js';
 import { syncCalendar } from './calendar.js';
 import {
   getUpcomingMeetings, listMeetings, listRecordings, getRecordingWithMeeting,
-  recoverStaleMeetings, sweepMissedMeetings, getMeeting, isPidAlive, claimOrphanedTranscriptions, instanceLockPath, type Meeting,
+  recoverStaleMeetings, sweepMissedMeetings, getMeeting, isPidAlive, claimOrphanedTranscriptions, instanceLockPath, markRuleSkipped,
+  setUserSkip, requestLeave, type Meeting,
 } from './db.js';
 import { isTerminalMeetingStatus, type MeetingStatus } from './status.js';
 import { loadConfig, saveDefaultConfig, meetingSkipReason, fmtTime } from './config.js';
@@ -46,6 +47,9 @@ async function main(): Promise<void> {
     case 'status':   showStatus(); break;
     case 'prune':    pruneCommand(args.includes('--dry-run')); break;
     case 'report':   reportCommand(args.slice(1)); break;
+    case 'skip':     controlCommand('skip', parseInt(args[1], 10)); break;
+    case 'unskip':   controlCommand('unskip', parseInt(args[1], 10)); break;
+    case 'leave':    controlCommand('leave', parseInt(args[1], 10)); break;
     default:         printUsage(); break;
   }
 }
@@ -66,6 +70,20 @@ function pruneCommand(dryRun: boolean): void {
   console.log(`${verb}: ${r.logs.length} log file(s), ${r.audio.length} audio file(s), ${r.screenshotDirs.length} screenshot folder(s), ${r.meetingRows} empty meeting row(s) — ${(r.bytes / 1024 / 1024).toFixed(1)} MB`);
   console.log(`Limits: logs ${config.logRetentionDays || 'kept forever'}${config.logRetentionDays ? 'd' : ''}; recordings ${config.retentionDays ? config.retentionDays + 'd' : 'kept forever (set retentionDays in config.json to enable)'}. Transcripts are never deleted.`);
   if (dryRun) for (const f of [...r.logs, ...r.audio, ...r.screenshotDirs]) console.log(`  ${f}`);
+}
+
+function controlCommand(cmd: 'skip' | 'unskip' | 'leave', id: number): void {
+  if (!Number.isInteger(id)) { console.error(`Usage: mibot ${cmd} <meeting-id>   (ids: mibot meetings)`); process.exitCode = 1; return; }
+  const m = getMeeting(id);
+  if (!m) { console.error(`No meeting ${id}.`); process.exitCode = 1; return; }
+  const ok = cmd === 'skip' ? setUserSkip(id, true) : cmd === 'unskip' ? setUserSkip(id, false) : requestLeave(id);
+  if (ok) {
+    console.log(cmd === 'skip' ? `Will not join "${m.title}".` : cmd === 'unskip' ? `Will join "${m.title}" again.` : `Asked the bot in "${m.title}" to leave (within ~5s; recording is kept).`);
+  } else {
+    console.error(cmd === 'skip' ? `"${m.title}" is ${m.status} — only a scheduled meeting can be skipped${['joining', 'in_call'].includes(m.status) ? '; use mibot leave' : ''}.`
+      : cmd === 'leave' ? `"${m.title}" is ${m.status}, not running.` : `Nothing to undo for "${m.title}".`);
+    process.exitCode = 1;
+  }
 }
 
 function reportCommand(args: string[]): void {
@@ -90,6 +108,8 @@ Usage:
   mibot send <id> <command>      Send command to running bot
   mibot prune [--dry-run]        Delete old logs (and, if retentionDays is set, old audio)
   mibot report [--days N] [--platform P]  Success rate, failure reasons, recent failures
+  mibot skip <id> / unskip <id>  Don't join this meeting (survives calendar changes) / undo
+  mibot leave <id>               Make a running bot leave now (recording is kept)
 
 Control commands:
   screenshot [path]              Take screenshot of bot's browser
@@ -427,6 +447,7 @@ async function startWatcher(): Promise<void> {
         // a meeting stays joinable until it ends, so it's re-evaluated every tick.
         const skip = meetingSkipReason(meeting, config);
         if (skip) {
+          markRuleSkipped(meeting.id, skip); // so it ends as 'skipped', not a 'missed' failure
           if (!skipLogged.has(meeting.id)) {
             skipLogged.add(meeting.id);
             console.error(`[mibot] Skipping (${skip}): ${meeting.title}`);

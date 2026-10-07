@@ -9,7 +9,7 @@ import fs from 'fs';
 import {
   getOrCreateMeeting, insertRecording, updateMeetingStatus, updateRecording,
   updateMeeting, getMeeting, updateHeartbeat, transaction, applyRecordingStatus, handleJoinFailure,
-  startJoinAttempt, markAttemptJoined, finishJoinAttempt, listJoinAttempts,
+  startJoinAttempt, markAttemptJoined, finishJoinAttempt, listJoinAttempts, leaveRequested,
 } from './db.js';
 import { RECORDING_STATUS } from './status.js';
 import { loadConfig, isBot } from './config.js';
@@ -182,6 +182,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     const vars: Record<string, string> = { botName: botDisplayName, meetingUrl: opts.url };
     const leave: LeaveRequests = {
       stopKeyword: config.consentStopKeyword,
+      external: () => leaveRequested(meeting.id), // Wave 10 #5: mibot leave
       isBotSender: (n) => isBot(n) || /^(you|me)$/i.test(n.trim()) || n.toLowerCase().startsWith(config.botName.toLowerCase()),
     };
 

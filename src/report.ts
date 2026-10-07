@@ -36,6 +36,7 @@ export function buildReport(opts: { sinceMs: number; nowMs?: number; platform?: 
          ORDER BY (r.status = 'done') DESC, r.id DESC LIMIT 1) AS rec_status
     FROM meetings m
     WHERE m.status IN ('done', 'failed', 'missed')
+      AND COALESCE(m.failure_reason, '') != 'skipped'  -- intentionally not joined (#5)
       AND datetime(m.start_time) >= datetime(?) ${platformFilter}
   `).all(...params) as Array<{ id: number; title: string; platform: string; start_time: string;
     status: string; failure_reason: string | null; rec_status: string | null }>;

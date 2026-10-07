@@ -110,6 +110,11 @@ export interface Meeting {
   consent_posted: number | null;
   /** Participant who asked the bot to leave with the stop keyword (Wave 10 #2). */
   stopped_by: string | null;
+  /** 1 = the operator ran `mibot skip` (Wave 10 #5); calendar sync never clears it. */
+  user_skip: number | null;
+  /** Set by `mibot leave`; the monitor loops leave on their next tick. */
+  leave_requested_at: string | null;
+  notified_at: string | null;
   status: string;
   created_at: string;
 }
@@ -190,7 +195,7 @@ const MEETING_COLUMNS = new Set([
   'calendar_event_id', 'organizer', 'organizer_email', 'location', 'description',
   'attendees', 'is_recurring', 'recurrence_id', 'status', 'participants', 'speaker_timeline',
   'heartbeat', 'owner_pid', 'is_organizer', 'failure_reason', 'failure_detail',
-  'consent_posted', 'stopped_by',
+  'consent_posted', 'stopped_by', 'leave_requested_at',
 ]);
 
 export function updateMeeting(id: number, updates: Record<string, unknown>): void {
@@ -218,6 +223,11 @@ export function updateMeeting(id: number, updates: Record<string, unknown>): voi
   // The whole statement is guarded, so an illegal status can't half-apply its sibling columns.
   let where = 'id = ?';
   const desired = updates.status;
+  // Wave 10 #5: a meeting that starts joining is no longer "skipped" (a rule that skipped it
+  // earlier no longer applies), so a stale reason can't follow it into a real outcome.
+  if (desired === 'joining' && !('failure_reason' in updates)) {
+    sets.splice(sets.length - 1, 0, 'failure_reason = NULL', 'failure_detail = NULL');
+  }
   if (desired !== undefined) {
     if (typeof desired !== 'string' || !isKnownMeetingStatus(desired)) {
       console.error(`[mibot] WARN: refused unknown meeting status "${String(desired)}" for id=${id}`);
@@ -397,7 +407,8 @@ export function recoverStaleMeetings(
 export function sweepMissedMeetings(): number {
   const db = getDb();
   return db.prepare(`
-    UPDATE meetings SET status = 'missed', failure_reason = 'missed'
+    UPDATE meetings SET status = 'missed',
+      failure_reason = CASE WHEN user_skip = 1 OR failure_reason = 'skipped' THEN 'skipped' ELSE 'missed' END
     WHERE status = 'scheduled'
       AND ${EFFECTIVE_END_SQL} <= datetime('now')
   `).run().changes;
@@ -551,6 +562,42 @@ export function reviveCancelledMeeting(
     `UPDATE meetings SET ${sets.join(', ')} WHERE id = ? AND status = 'cancelled'`,
   ).run(...vals);
   return res.changes > 0;
+}
+
+// ── Per-meeting control (Wave 10 #5) ─────────────────────────────────────
+
+/** `mibot skip` / `unskip`. Only a meeting that hasn't started can be skipped (use leave for
+ *  a running one). Calendar sync never touches user_skip, so a skip survives a reschedule. */
+export function setUserSkip(id: number, on: boolean): boolean {
+  const db = getDb();
+  const res = on
+    ? db.prepare(`UPDATE meetings SET user_skip = 1, failure_reason = 'skipped', failure_detail = 'mibot skip'
+                  WHERE id = ? AND status = 'scheduled'`).run(id)
+    : db.prepare(`UPDATE meetings SET user_skip = 0,
+                    failure_detail = CASE WHEN failure_reason = 'skipped' THEN NULL ELSE failure_detail END,
+                    failure_reason = CASE WHEN failure_reason = 'skipped' THEN NULL ELSE failure_reason END
+                  WHERE id = ?`).run(id);
+  return res.changes > 0;
+}
+
+/** The watcher skipped this meeting by rule (keyword, filters). Recorded so that, when its time
+ *  passes, it's 'skipped' rather than 'missed' — and so it isn't counted as a failure. */
+export function markRuleSkipped(id: number, why: string): void {
+  getDb().prepare(`UPDATE meetings SET failure_reason = 'skipped', failure_detail = ?
+                   WHERE id = ? AND status = 'scheduled' AND (failure_reason IS NULL OR failure_reason = 'skipped')`)
+    .run(why, id);
+}
+
+/** `mibot leave`: ask a running bot (any process, either engine) to leave on its next tick. */
+export function requestLeave(id: number): boolean {
+  return getDb().prepare(`UPDATE meetings SET leave_requested_at = ? WHERE id = ? AND status IN ('joining', 'in_call')`)
+    .run(new Date().toISOString(), id).changes > 0;
+}
+
+/** Read by both monitor loops each tick: a reason to leave, or null. */
+export function leaveRequested(id: number): string | null {
+  const row = getDb().prepare('SELECT leave_requested_at FROM meetings WHERE id = ?').get(id) as { leave_requested_at: string | null } | undefined;
+  return row?.leave_requested_at ? 'the operator ran mibot leave' : null;
 }
 
 // ── Join attempts (Wave 10 #1) ───────────────────────────────────────────
