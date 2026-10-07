@@ -114,6 +114,8 @@ export interface Meeting {
   user_skip: number | null;
   /** Set by `mibot leave`; the monitor loops leave on their next tick. */
   leave_requested_at: string | null;
+  /** 1 = a `mibot selftest --live` run; excluded from reports and notes (Wave 10 #6). */
+  is_selftest: number | null;
   notified_at: string | null;
   status: string;
   created_at: string;
@@ -149,6 +151,7 @@ export function insertMeeting(m: {
   is_recurring?: boolean;
   recurrence_id?: string;
   is_organizer?: boolean;
+  is_selftest?: boolean;
 }): Meeting {
   const db = getDb();
   // AR6: stamp heartbeat at insert so a freshly-created meeting is immediately "live".
@@ -158,8 +161,8 @@ export function insertMeeting(m: {
   const stmt = db.prepare(`
     INSERT INTO meetings (title, platform, join_url, start_time, end_time,
       calendar_event_id, organizer, organizer_email, location, description,
-      attendees, is_recurring, recurrence_id, heartbeat, is_organizer)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      attendees, is_recurring, recurrence_id, heartbeat, is_organizer, is_selftest)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT DO NOTHING
   `);
   const result = stmt.run(
@@ -169,6 +172,7 @@ export function insertMeeting(m: {
     m.attendees ? JSON.stringify(m.attendees) : null,
     m.is_recurring ? 1 : 0, m.recurrence_id ?? null, new Date().toISOString(),
     m.is_organizer === undefined ? null : m.is_organizer ? 1 : 0,
+    m.is_selftest ? 1 : 0,
   );
   if (result.changes === 0 && m.calendar_event_id) {
     // A concurrent insert won the race; return the existing row rather than a null lookup.

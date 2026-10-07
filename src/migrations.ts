@@ -218,6 +218,13 @@ export const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, 'meetings', 'leave_requested_at', 'TEXT');
     },
   },
+  {
+    version: 12,
+    name: 'is_selftest: self-test runs are excluded from reports and notes (Wave 10 #6)',
+    up: (db) => {
+      addColumnIfMissing(db, 'meetings', 'is_selftest', 'INTEGER DEFAULT 0');
+    },
+  },
 ];
 
 /**
@@ -239,3 +246,6 @@ export function runMigrations(db: Database.Database): number {
 
   return current;
 }
+
+/** The schema version the code expects (the highest migration). */
+export const LATEST_SCHEMA_VERSION = Math.max(...MIGRATIONS.map((m) => m.version));

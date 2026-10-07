@@ -96,6 +96,8 @@ export interface BotOptions {
   url: string;
   title?: string;
   calendarEventId?: string;
+  /** Wave 10 #6: a self-test run — tagged, leaves after maxSeconds in the call, not transcribed. */
+  selftest?: { maxSeconds: number };
 }
 
 /**
@@ -115,6 +117,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     title, platform, join_url: opts.url,
     start_time: new Date().toISOString(),
     calendar_event_id: opts.calendarEventId,
+    is_selftest: opts.selftest ? true : undefined,
   });
 
   if (!fs.existsSync(RECORDINGS_DIR)) {
@@ -128,6 +131,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
   // Wave 10 #1: one attempt row per bot run, so retries keep their history and a failure says why.
   const attemptId = startJoinAttempt(meeting.id);
   let reachedCall = false;
+  let inCallAt = 0;
   let pwPage: Page | null = null; // kept for the failure screenshot
 
   let controlChannel: ControlChannel | null = null;
@@ -182,7 +186,9 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     const vars: Record<string, string> = { botName: botDisplayName, meetingUrl: opts.url };
     const leave: LeaveRequests = {
       stopKeyword: config.consentStopKeyword,
-      external: () => leaveRequested(meeting.id), // Wave 10 #5: mibot leave
+      // Wave 10 #5: mibot leave. #6: a self-test leaves once its window in the call is over.
+      external: () => leaveRequested(meeting.id)
+        ?? (opts.selftest && inCallAt && Date.now() - inCallAt >= opts.selftest.maxSeconds * 1000 ? 'self-test window over' : null),
       isBotSender: (n) => isBot(n) || /^(you|me)$/i.test(n.trim()) || n.toLowerCase().startsWith(config.botName.toLowerCase()),
     };
 
@@ -195,6 +201,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
 
       updateMeeting(meeting.id, { status: 'in_call', actual_start: new Date().toISOString() });
       reachedCall = true;
+      inCallAt = Date.now();
       markAttemptJoined(attemptId);
       resolveJoinAlerts(platform);
       console.error('[mibot] In call (via camofox). Monitoring...');
@@ -232,7 +239,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
 
       // C5: the camofox (Google Meet) path previously jumped straight to 'done'
       // without ever transcribing. Run the same pipeline as the Playwright path.
-      if (haveAudio) {
+      if (haveAudio && !opts.selftest) {
         const outcome = await transcribe(recording.id, audioPath, result.participants, result.speakerTimeline);
         applyRecordingStatus(recording.id, outcome);
         noteTranscriptionOutcome(outcome, title);
@@ -279,6 +286,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
 
       updateMeeting(meeting.id, { status: 'in_call', actual_start: new Date().toISOString() });
       reachedCall = true;
+      inCallAt = Date.now();
       markAttemptJoined(attemptId);
       resolveJoinAlerts(platform);
       console.error('[mibot] In call. Recording...');
@@ -345,7 +353,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       await closeBrowser();
       browser = null;
 
-      if (haveAudio) {
+      if (haveAudio && !opts.selftest) {
         // T1/C7: persist the *outcome* transcribe reports (done / transcribe_failed),
         // reconciled so a stale 'done' can't clobber a real failure. If there was no
         // audio, the recording is already terminal ('no_audio') and left untouched.

@@ -68,6 +68,9 @@ export interface MiBotConfig {
 
   /** Wave 10 #5: this token forces a join past onlyOrganized / minAttendees. */
   forceKeyword: string;
+
+  /** Wave 10 #6: test meeting room per platform for `mibot selftest --live <platform>`. */
+  selftest: { testMeetings: Record<string, string> };
 }
 
 export interface NotifyConfig {
@@ -129,6 +132,7 @@ export const DEFAULTS: MiBotConfig = {
   notify: { folder: '~/MiBot Notes', digest: 'each', alerts: true },
   skipKeyword: '[no-bot]',
   forceKeyword: '[bot]',
+  selftest: { testMeetings: {} },
 };
 
 /** Numeric fields and their valid [min, max] ranges (inclusive). Anything outside the
@@ -180,6 +184,11 @@ export function validateConfig(input: Partial<MiBotConfig>): MiBotConfig {
   if (typeof raw.consentStopKeyword === 'string' && raw.consentStopKeyword.trim() !== '') out.consentStopKeyword = raw.consentStopKeyword.trim();
   if (typeof raw.botNameSuffix === 'string') out.botNameSuffix = raw.botNameSuffix;
   if (typeof raw.skipKeyword === 'string' && raw.skipKeyword.trim() !== '') out.skipKeyword = raw.skipKeyword.trim();
+  out.selftest = { testMeetings: {} };
+  const tm = (raw.selftest as any)?.testMeetings;
+  if (tm && typeof tm === 'object' && !Array.isArray(tm)) {
+    for (const [k, v] of Object.entries(tm)) if (typeof v === 'string' && /^https:\/\//.test(v)) out.selftest.testMeetings[k] = v;
+  }
   if (typeof raw.forceKeyword === 'string' && raw.forceKeyword.trim() !== '') out.forceKeyword = raw.forceKeyword.trim();
   // notify: an object; each field validated on its own, falling back to its default.
   out.notify = { ...DEFAULTS.notify };

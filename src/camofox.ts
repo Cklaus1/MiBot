@@ -150,6 +150,12 @@ export interface CamofoxFetchOptions {
  *  mistaken for a valid response. `label` is the logical path used in error messages.
  *  J15: every request is bounded by an AbortSignal timeout — a hung camofox connection
  *  surfaces as a typed CamofoxApiError instead of blocking the bot forever. */
+/** Wave 10 #6: is camofox up? Throws with a reason if not. */
+export async function pingCamofox(): Promise<void> {
+  const data = await camofoxFetch('/', `${CAMOFOX_URL}/`) as { ok?: boolean };
+  if (!data?.ok) throw new Error(`camofox at ${CAMOFOX_URL} is not ready`);
+}
+
 export async function camofoxFetch(
   label: string,
   url: string,

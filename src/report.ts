@@ -37,6 +37,7 @@ export function buildReport(opts: { sinceMs: number; nowMs?: number; platform?: 
     FROM meetings m
     WHERE m.status IN ('done', 'failed', 'missed')
       AND COALESCE(m.failure_reason, '') != 'skipped'  -- intentionally not joined (#5)
+      AND COALESCE(m.is_selftest, 0) = 0               -- self-test runs (#6)
       AND datetime(m.start_time) >= datetime(?) ${platformFilter}
   `).all(...params) as Array<{ id: number; title: string; platform: string; start_time: string;
     status: string; failure_reason: string | null; rec_status: string | null }>;
@@ -58,7 +59,8 @@ export function buildReport(opts: { sinceMs: number; nowMs?: number; platform?: 
   const joins = (db.prepare(`
     SELECT (julianday(a.joined_at) - julianday(a.started_at)) * 86400.0 AS sec
     FROM join_attempts a JOIN meetings m ON m.id = a.meeting_id
-    WHERE a.joined_at IS NOT NULL AND datetime(a.started_at) >= datetime(?) ${platformFilter}
+    WHERE a.joined_at IS NOT NULL AND COALESCE(m.is_selftest, 0) = 0
+      AND datetime(a.started_at) >= datetime(?) ${platformFilter}
     ORDER BY sec
   `).all(...params) as { sec: number }[]).map((r) => r.sec);
   const medianJoinSec = joins.length === 0 ? null
@@ -69,7 +71,8 @@ export function buildReport(opts: { sinceMs: number; nowMs?: number; platform?: 
       a.step, a.screenshot_path AS screenshot
     FROM meetings m LEFT JOIN join_attempts a ON a.id = (
       SELECT id FROM join_attempts WHERE meeting_id = m.id AND outcome = 'failed' ORDER BY attempt DESC LIMIT 1)
-    WHERE m.status = 'failed' AND datetime(m.start_time) >= datetime(?) ${platformFilter}
+    WHERE m.status = 'failed' AND COALESCE(m.is_selftest, 0) = 0
+      AND datetime(m.start_time) >= datetime(?) ${platformFilter}
     ORDER BY m.start_time DESC LIMIT 10
   `).all(...params) as Report['recentFailures'];
 

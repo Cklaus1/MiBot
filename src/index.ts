@@ -17,6 +17,8 @@ import { SyncSchedule, LAUNCH_TICK_MS } from './watch-clock.js';
 import { acquireInstanceLock } from './instance-lock.js';
 import { prune, type PruneReport } from './prune.js';
 import { buildReport, formatReport } from './report.js';
+import { preflight, live as liveSelftest } from './selftest-run.js';
+import { formatPreflight, preflightPassed, explainCliFailure } from './selftest.js';
 import {
   channelFor, setAlertsEnabled, noticeAlert, raiseAlert, resolveAlert, enqueuePendingDigests, drainOutbox,
 } from './notify.js';
@@ -50,6 +52,7 @@ async function main(): Promise<void> {
     case 'skip':     controlCommand('skip', parseInt(args[1], 10)); break;
     case 'unskip':   controlCommand('unskip', parseInt(args[1], 10)); break;
     case 'leave':    controlCommand('leave', parseInt(args[1], 10)); break;
+    case 'selftest': await selftestCommand(args.slice(1)); break;
     default:         printUsage(); break;
   }
 }
@@ -70,6 +73,21 @@ function pruneCommand(dryRun: boolean): void {
   console.log(`${verb}: ${r.logs.length} log file(s), ${r.audio.length} audio file(s), ${r.screenshotDirs.length} screenshot folder(s), ${r.meetingRows} empty meeting row(s) — ${(r.bytes / 1024 / 1024).toFixed(1)} MB`);
   console.log(`Limits: logs ${config.logRetentionDays || 'kept forever'}${config.logRetentionDays ? 'd' : ''}; recordings ${config.retentionDays ? config.retentionDays + 'd' : 'kept forever (set retentionDays in config.json to enable)'}. Transcripts are never deleted.`);
   if (dryRun) for (const f of [...r.logs, ...r.audio, ...r.screenshotDirs]) console.log(`  ${f}`);
+}
+
+async function selftestCommand(args: string[]): Promise<void> {
+  const flag = (name: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+  const results = await preflight();
+  console.log(formatPreflight(results));
+  if (!preflightPassed(results)) { process.exitCode = 1; return; }
+  const platform = flag('--live');
+  if (!platform) return;
+  const seconds = Math.min(600, Math.max(20, parseInt(flag('--seconds') ?? '60', 10) || 60));
+  console.log(`\nLive self-test on ${platform} (${seconds}s in the call)…`);
+  const r = await liveSelftest(platform, seconds);
+  console.log(r.ok ? `✓ Live: ${r.usableSec?.toFixed(0)}s of audible audio recorded in a ${r.windowSec}s window.`
+    : `✗ Live:\n${r.problems.map((p) => `  - ${p}`).join('\n')}`);
+  if (!r.ok) process.exitCode = 1;
 }
 
 function controlCommand(cmd: 'skip' | 'unskip' | 'leave', id: number): void {
@@ -110,6 +128,7 @@ Usage:
   mibot report [--days N] [--platform P]  Success rate, failure reasons, recent failures
   mibot skip <id> / unskip <id>  Don't join this meeting (survives calendar changes) / undo
   mibot leave <id>               Make a running bot leave now (recording is kept)
+  mibot selftest [--live <platform> [--seconds N]]  Check the setup; --live records a test room
 
 Control commands:
   screenshot [path]              Take screenshot of bot's browser
@@ -352,6 +371,7 @@ async function startWatcher(): Promise<void> {
   let resumingTranscriptions = false;
   const skipLogged = new Set<number>();
   let lastPruneAt = 0;
+  let lastPreflightAt = 0;
   const syncFailures = new Map<string, number>();
   const poll = async () => {
     if (polling) { console.error('[mibot] Poll still running, skipping this tick'); return; }
@@ -371,7 +391,7 @@ async function startWatcher(): Promise<void> {
             const n = (syncFailures.get(provider) ?? 0) + 1;
             syncFailures.set(provider, n);
             if (n >= 3) raiseAlert(key, `${provider === 'm365' ? 'Microsoft 365' : 'Google'} calendar sync failing`,
-              `${n} syncs in a row failed (${err.message.split('\n')[0].slice(0, 160)}). Usually an expired login — new meetings are not being picked up.`);
+              `${n} syncs in a row failed: ${explainCliFailure(err, provider === 'm365' ? 'ms365 auth login' : 'gws auth login')}. New meetings are not being picked up.`);
           });
         } catch (err) { console.error(`[mibot] Calendar sync error: ${(err as Error).message}`); }
       }
@@ -414,6 +434,16 @@ async function startWatcher(): Promise<void> {
             }
           })().finally(() => { resumingTranscriptions = false; });
         }
+      }
+
+      // Wave 10 #6: preflight once a day; a failure raises the 'selftest' alert, a pass resolves it.
+      if (Date.now() - lastPreflightAt >= 24 * 60 * 60 * 1000) {
+        lastPreflightAt = Date.now();
+        void preflight().then((r) => {
+          const bad = r.filter((c) => !c.ok && c.required);
+          if (bad.length) raiseAlert('selftest', 'Daily self-check failed', bad.map((c) => `${c.name}: ${c.detail}`).join('; '));
+          else resolveAlert('selftest', 'Daily self-check passed.');
+        }).catch((err) => console.error(`[mibot] Self-check error: ${(err as Error).message}`));
       }
 
       // Wave 9-L: retention, once a day (cheap, but no reason to walk the dirs every minute).
