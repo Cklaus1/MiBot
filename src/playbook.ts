@@ -41,6 +41,9 @@ export interface Playbook {
   browser?: 'playwright' | 'camofox';  // Browser backend (default: playwright)
   variables?: Record<string, string>;
   steps: PlaybookStep[];
+  /** Wave 10 #2: steps that post the recording notice to chat ({{consentMessage}}). Optional —
+   *  overrides the bundled defaults in consent.ts. */
+  announce?: PlaybookStep[];
 }
 
 // ── Pure helpers (unit-testable, shared by both engines) ──────────────
@@ -67,6 +70,11 @@ export function validatePlaybook(raw: unknown): Playbook {
       throw new Error(`Invalid playbook: step ${i + 1} is missing a string "action"`);
     }
   });
+  if (pb.announce !== undefined) {
+    if (!Array.isArray(pb.announce) || pb.announce.some((s) => !s || typeof s !== 'object' || typeof (s as any).action !== 'string')) {
+      throw new Error('Invalid playbook: "announce" must be an array of steps with a string "action"');
+    }
+  }
   return raw as Playbook;
 }
 

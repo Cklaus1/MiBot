@@ -106,6 +106,10 @@ export interface Meeting {
   /** Why it didn't produce a recording (Wave 10 #1); set on terminal failure. */
   failure_reason: string | null;
   failure_detail: string | null;
+  /** 1 if the recording notice was posted to chat, 0 if posting failed, null if not attempted. */
+  consent_posted: number | null;
+  /** Participant who asked the bot to leave with the stop keyword (Wave 10 #2). */
+  stopped_by: string | null;
   status: string;
   created_at: string;
 }
@@ -186,6 +190,7 @@ const MEETING_COLUMNS = new Set([
   'calendar_event_id', 'organizer', 'organizer_email', 'location', 'description',
   'attendees', 'is_recurring', 'recurrence_id', 'status', 'participants', 'speaker_timeline',
   'heartbeat', 'owner_pid', 'is_organizer', 'failure_reason', 'failure_detail',
+  'consent_posted', 'stopped_by',
 ]);
 
 export function updateMeeting(id: number, updates: Record<string, unknown>): void {

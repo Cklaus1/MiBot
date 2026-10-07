@@ -1,3 +1,4 @@
+import { findStopRequest } from './consent.js';
 import { RosterTracker } from './roster.js';
 import { type Page } from 'playwright';
 import os from 'os';
@@ -223,7 +224,8 @@ export async function waitForMeetingEnd(
   platform: string,
   config: ReturnType<typeof loadConfig>,
   signalTracker: SignalTracker,
-): Promise<{ participants: Participant[]; speakerTimeline: SpeakerSegment[] }> {
+  leave: LeaveRequests = {},
+): Promise<{ participants: Participant[]; speakerTimeline: SpeakerSegment[]; stoppedBy?: string; leftBecause?: string }> {
   const maxMs = config.maxDurationHours * 60 * 60 * 1000;
   const startTime = Date.now();
   let lastHumanCount = -1;
@@ -250,6 +252,9 @@ export async function waitForMeetingEnd(
   const speakerTracker = new SpeakerTracker();
 
   const MIN_CALL_SECONDS = 60; // Warm-up: don't ACT on "ended" in the first 60 seconds
+  let chatSeen = 0;
+  let stoppedBy: string | undefined;
+  let leftBecause: string | undefined;
 
   while (Date.now() - startTime < maxMs) {
     await page.waitForTimeout(5000);
@@ -292,6 +297,15 @@ export async function waitForMeetingEnd(
     // Track chat, reactions, hand raises, screen shares
     await signalTracker.poll(page, platform).catch(() => {}); // M8: never let a poll crash end the meeting
 
+    // Wave 10 #2/#5: a participant typed the stop keyword, or the operator asked us to leave.
+    const req = checkLeaveRequests(leave, signalTracker.chatSince(chatSeen));
+    chatSeen = signalTracker.chatCount;
+    if (req) {
+      ({ stoppedBy, leftBecause } = req);
+      console.error(`[mibot] Leaving — ${leftBecause}`);
+      break;
+    }
+
     // M3: feed roster-count-minus-self into the leave gate when names can't be scraped.
     const humanCount = deriveHumanCount({ humans, bots, rosterCount });
 
@@ -328,5 +342,30 @@ export async function waitForMeetingEnd(
     console.error(`[mibot] Speaker timeline: ${totalSpeakers} speakers, ${totalSegments} segments`);
   }
 
-  return { participants, speakerTimeline };
+  return { participants, speakerTimeline, stoppedBy, leftBecause };
+}
+
+/**
+ * Wave 10 #2/#5: reasons to leave that come from people rather than the meeting's state. Shared
+ * by both monitor loops (the camofox loop calls checkLeaveRequests too).
+ */
+export interface LeaveRequests {
+  /** Leave when a participant sends exactly this in chat (recording is kept). */
+  stopKeyword?: string;
+  /** True for the bot itself and other bots — they can't stop the recording. */
+  isBotSender?: (name: string) => boolean;
+  /** Operator-requested leave (e.g. `mibot leave <id>`); returns a reason, or null to stay. */
+  external?: () => string | null;
+}
+
+export function checkLeaveRequests(
+  leave: LeaveRequests,
+  newChat: Array<{ sender: string; text: string }>,
+): { stoppedBy?: string; leftBecause: string } | null {
+  if (leave.stopKeyword) {
+    const who = findStopRequest(newChat, leave.stopKeyword, leave.isBotSender ?? (() => false));
+    if (who) return { stoppedBy: who, leftBecause: `${who} asked the bot to stop (${leave.stopKeyword})` };
+  }
+  const ext = leave.external?.();
+  return ext ? { leftBecause: ext } : null;
 }

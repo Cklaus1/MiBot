@@ -372,6 +372,13 @@ export class SignalTracker {
 
   // ── Finalize ──────────────────────────────────────────────────
 
+  /** Chat messages captured since index `from` (Wave 10 #2: scanned each tick for the stop keyword). */
+  chatSince(from: number): ChatMessage[] {
+    return this.chat.slice(from);
+  }
+
+  get chatCount(): number { return this.chat.length; }
+
   finish(): MeetingSignals {
     // Close any open screen share
     if (this.currentShare) {

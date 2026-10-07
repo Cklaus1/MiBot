@@ -1,3 +1,4 @@
+import { DEFAULT_CONSENT_MESSAGE, DEFAULT_STOP_KEYWORD } from './consent.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -48,6 +49,16 @@ export interface MiBotConfig {
 
   /** Delete log files older than this many days. 0 = keep forever. */
   logRetentionDays: number;
+
+  /** Recording notice posted to meeting chat on joining ({{botName}}, {{stopKeyword}}).
+   *  Empty string = don't post (Wave 10 #2). */
+  consentMessage: string;
+
+  /** A participant sending exactly this in chat makes the bot leave (recording kept). */
+  consentStopKeyword: string;
+
+  /** Appended to the bot's display name so the recording is always visible, e.g. " (recording)". */
+  botNameSuffix: string;
 }
 
 export const DEFAULTS: MiBotConfig = {
@@ -94,6 +105,9 @@ export const DEFAULTS: MiBotConfig = {
   minAttendees: 0,
   retentionDays: 0,
   logRetentionDays: 30,
+  consentMessage: DEFAULT_CONSENT_MESSAGE,
+  consentStopKeyword: DEFAULT_STOP_KEYWORD,
+  botNameSuffix: ' (recording)',
 };
 
 /** Numeric fields and their valid [min, max] ranges (inclusive). Anything outside the
@@ -140,6 +154,10 @@ export function validateConfig(input: Partial<MiBotConfig>): MiBotConfig {
   }
   // botName: non-empty string only.
   if (typeof raw.botName === 'string' && raw.botName.trim() !== '') out.botName = raw.botName;
+  // Wave 10 #2. consentMessage may be '' (explicit opt-out); the stop keyword must be non-blank.
+  if (typeof raw.consentMessage === 'string') out.consentMessage = raw.consentMessage;
+  if (typeof raw.consentStopKeyword === 'string' && raw.consentStopKeyword.trim() !== '') out.consentStopKeyword = raw.consentStopKeyword.trim();
+  if (typeof raw.botNameSuffix === 'string') out.botNameSuffix = raw.botNameSuffix;
 
   // numeric fields: must be finite integers within range.
   for (const [field, [min, max]] of Object.entries(NUMERIC_RANGES)) {
@@ -234,6 +252,9 @@ export function saveDefaultConfig(): void {
 export function isBot(name: string): boolean {
   const config = loadConfig();
   const lower = name.toLowerCase();
+  // MiBot itself, under any suffix (e.g. "MiBot (recording)", Wave 10 #2) — independent of
+  // botPatterns, so a custom botName can never be counted as a human and block alone-detection.
+  if (config.botName && lower.startsWith(config.botName.toLowerCase())) return true;
   return config.botPatterns.some(pattern => {
     try {
       return new RegExp(pattern, 'i').test(lower);

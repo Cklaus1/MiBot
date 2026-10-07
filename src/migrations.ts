@@ -169,6 +169,14 @@ export const MIGRATIONS: Migration[] = [
                WHERE status IN ('failed', 'missed', 'cancelled') AND failure_reason IS NULL`);
     },
   },
+  {
+    version: 9,
+    name: 'recording notice: consent_posted + stopped_by (Wave 10 #2)',
+    up: (db) => {
+      addColumnIfMissing(db, 'meetings', 'consent_posted', 'INTEGER');
+      addColumnIfMissing(db, 'meetings', 'stopped_by', 'TEXT');
+    },
+  },
 ];
 
 /**

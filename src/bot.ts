@@ -16,9 +16,10 @@ import { loadConfig, isBot } from './config.js';
 import { SignalTracker } from './signals.js';
 import { launchBrowser } from './recorder.js';
 import { installAudioCapture } from './webrtc-capture.js';
-import { PlaybookEngine, CamofoxPlaybookEngine } from './playbook.js';
+import { PlaybookEngine, CamofoxPlaybookEngine, type Playbook } from './playbook.js';
 import { ControlChannel } from './control.js';
-import { waitForMeetingEnd, SpeakerTracker } from './meeting.js';
+import { waitForMeetingEnd, SpeakerTracker, checkLeaveRequests, type LeaveRequests } from './meeting.js';
+import { consentMessage, postConsent, announceSteps } from './consent.js';
 import { RosterTracker } from './roster.js';
 import { LeavePolicy } from './leave-policy.js';
 import { ShareScreenshots, MAX_SCREENSHOTS } from './image-similarity.js';
@@ -175,7 +176,13 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     const playbook = PlaybookEngine.loadForPlatform(platform);
     if (!playbook) throw new Error(`No playbook found for ${platform}. Create ~/.config/mibot/playbooks/${platform}.json`);
 
-    const vars: Record<string, string> = { botName: config.botName, meetingUrl: opts.url };
+    // Wave 10 #2: the suffix (default " (recording)") keeps the recording visible in the roster.
+    const botDisplayName = `${config.botName}${config.botNameSuffix}`;
+    const vars: Record<string, string> = { botName: botDisplayName, meetingUrl: opts.url };
+    const leave: LeaveRequests = {
+      stopKeyword: config.consentStopKeyword,
+      isBotSender: (n) => isBot(n) || /^(you|me)$/i.test(n.trim()) || n.toLowerCase().startsWith(config.botName.toLowerCase()),
+    };
 
     if (playbook.browser === 'camofox') {
       // ── Camofox path (Google Meet) ──────────────────────────────────
@@ -192,9 +199,11 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       // Install signal observer + audio capture
       await camofoxPage.installSignalObserver();
       await installCamofoxAudioCapture(camofoxPage);
+      await announceRecording(meeting.id, engine, playbook, platform, config, botDisplayName);
 
       // Run camofox monitoring loop
-      const result = await monitorCamofoxMeeting(camofoxPage, meeting.id, audioPath, config);
+      const result = await monitorCamofoxMeeting(camofoxPage, meeting.id, audioPath, config, leave);
+      if (result.stoppedBy) updateMeeting(meeting.id, { stopped_by: result.stoppedBy });
 
       // Save results
       await camofoxPage.close();
@@ -270,9 +279,11 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       console.error('[mibot] In call. Recording...');
 
       captureSession = startAudioCapture(page, audioPath);
+      await announceRecording(meeting.id, engine, playbook, platform, config, botDisplayName);
       const signalTracker = new SignalTracker(RECORDINGS_DIR, meeting.id);
 
-      const { participants: trackedParticipants, speakerTimeline } = await waitForMeetingEnd(page, platform, config, signalTracker);
+      const { participants: trackedParticipants, speakerTimeline, stoppedBy } = await waitForMeetingEnd(page, platform, config, signalTracker, leave);
+      if (stoppedBy) updateMeeting(meeting.id, { stopped_by: stoppedBy });
       const signals = signalTracker.finish();
 
       console.error('[mibot] Leaving. Saving audio...');
@@ -374,6 +385,27 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     await closeBrowser();
     await closeCamofox();
   }
+}
+
+/**
+ * Wave 10 #2: post the recording notice and remember whether it went out. Recording continues
+ * either way (OQ-4); a failure is logged loudly and flagged on the meeting for the digest.
+ */
+async function announceRecording(
+  meetingId: number,
+  engine: { run(pb: Playbook): Promise<void> },
+  playbook: Playbook,
+  platform: string,
+  config: ReturnType<typeof loadConfig>,
+  botDisplayName: string,
+): Promise<void> {
+  const msg = consentMessage(config.consentMessage, { botName: botDisplayName, stopKeyword: config.consentStopKeyword });
+  if (!msg.trim()) return; // operator turned the notice off
+  const posted = await postConsent(engine, announceSteps(playbook, platform), msg, platform);
+  updateMeeting(meetingId, { consent_posted: posted ? 1 : 0 });
+  console.error(posted
+    ? '[mibot] Recording notice posted to chat'
+    : '[mibot] WARN: recording notice NOT posted — still recording; participants were not notified');
 }
 
 // ── Camofox audio capture ─────────────────────────────────────────────
@@ -556,6 +588,8 @@ interface CamofoxMonitorResult {
     hand_raises: any[];
     screen_shares: any[];
   };
+  /** Wave 10 #2: participant who sent the stop keyword. */
+  stoppedBy?: string;
 }
 
 async function monitorCamofoxMeeting(
@@ -563,7 +597,10 @@ async function monitorCamofoxMeeting(
   meetingId: number,
   audioPath: string,
   config: ReturnType<typeof loadConfig>,
+  leave: LeaveRequests = {},
 ): Promise<CamofoxMonitorResult> {
+  let signalsSeen = 0; // index into allSignals already scanned for the stop keyword
+  let stoppedBy: string | undefined;
   const allSignals: Array<{ raw: string; type: string; who: string; detail: string; time: string }> = [];
   // AR1 slice: the roster diff and speaker segmentation are the same browser-independent
   // bookkeeping the Playwright loop does. They were hand-rolled a second time here and had
@@ -777,6 +814,16 @@ async function monitorCamofoxMeeting(
       lastAudioFlush = Date.now();
     }
 
+    // Wave 10 #2/#5: stop keyword from a participant, or an operator leave request.
+    const newChat = allSignals.slice(signalsSeen).filter((sg) => sg.type === 'chat').map((sg) => ({ sender: sg.who, text: sg.detail }));
+    signalsSeen = allSignals.length;
+    const req = checkLeaveRequests(leave, newChat);
+    if (req) {
+      stoppedBy = req.stoppedBy;
+      console.error(`[mibot] Leaving — ${req.leftBecause}`);
+      break;
+    }
+
     // M15: single leave gate. During warm-up we track but never act on a missing button
     // (mirror meeting.ts). The policy owns duration cap, leave-button debounce, alone-timeout,
     // and empty-grace — all previously absent from this loop.
@@ -818,7 +865,7 @@ async function monitorCamofoxMeeting(
   console.error(`[mibot] Participants tracked: ${participants.length} (${participants.filter(p => p.spoke).length} spoke)`);
   console.error(`[mibot] Speaker segments: ${speakerSegments.length}`);
 
-  return { participants, speakerTimeline: speakerSegments, signals };
+  return { participants, speakerTimeline: speakerSegments, signals, stoppedBy };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
