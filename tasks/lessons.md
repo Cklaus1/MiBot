@@ -218,3 +218,13 @@
   titles. Before citing numbers from a dataset, look at a sample of the actual rows — titles,
   URLs, sources, dates — not only the aggregates. And say where a number comes from, so a
   wrong premise can be caught by the reader.
+
+- **Run the diagnostic you just built against the real system before calling it done.** The
+  first real `mibot selftest` found that both calendar logins had expired — the actual reason
+  MiBot hadn't picked up a meeting in six months — and also that its own messages ("killed by
+  SIGTERM") hid that cause. A check that fails with an unhelpful message is only half a check.
+
+- **"Wait until everything is finished" conditions need an owner for every stuck state.** The
+  digest scan waited for every recording of a meeting to finish; one orphaned row from an old
+  crash would have blocked that meeting's note forever. Wait on the thing that matters (the
+  latest recording), not on everything that could possibly be stuck.

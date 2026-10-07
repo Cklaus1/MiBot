@@ -251,3 +251,23 @@ recommended default. Build order #1 → #2 → #3+#4 → #5 → #6 → #7.
       (non-meeting links, or the `https://zoom.us/j/123` fixture; never calendar-sourced rows; no audio
       files existed). Kept 68: 16 calendar meetings + 52 March manual runs. Backup:
       ~/.config/mibot/mibot.db.bak-20261007-142134-before-test-row-cleanup (integrity ok, 1066 rows).
+
+## Wave 10 — built (2026-10-07)
+- [x] #1 failure diagnostics + `mibot report` (bd0750d)
+- [x] #2 recording notice + `!stop` (44691a5)
+- [x] #3/#4 notes-folder digests + ALERTS.md (163e2aa)
+- [x] #5 `[no-bot]`/`[bot]`, `mibot skip/unskip/leave` (26c0503)
+- [x] #6 `mibot selftest` (+ `--live`), daily self-check (6f4dea4)
+- [x] #7 `mibot search` (3c50889)
+
+### Review
+468 → 633 tests (Wave 9 start → now); typecheck and build clean. Schema v13 (v8–v13 additive);
+applies to the production DB the next time a mibot command opens it.
+Verified on real data (DB copies): `mibot report` (exposed the test-fixture pollution), a real
+meeting's note from its real summary, `mibot search` over the 12 real transcripts, skip/leave CLI,
+and `mibot selftest` on this machine — which found **both calendar logins expired** (the reason no
+meeting has been picked up since March).
+Operator actions: `ms365 auth login`; `gws auth login`; start camofox for Meet; set up
+selftest.testMeetings.<platform> (+ optional <platform>-speaker.json that joins with mic on).
+Live checklist still open (spec §6): chat notice + !stop on each platform; a real note; an alert
+firing and resolving; `selftest --live` on one platform.
