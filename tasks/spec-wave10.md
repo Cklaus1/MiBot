@@ -1,7 +1,7 @@
 # Wave 10 spec — make MiBot measurable, lawful, and useful
 
-**Status:** Draft. Open questions are marked **OQ-n**; each carries a recommended default, so
-a build can start once they're answered or the defaults are accepted.
+**Status:** Approved for build 2026-10-07. Decisions in §7: OQ-2, OQ-4, OQ-5 and OQ-9 answered by the
+operator; the rest take their recommended defaults.
 **Date:** 2026-10-07
 **Scope:** the Critical and High items from the PM review (#1–#7). The Medium items are
 backlog, listed at the end and in `tasks/opportunities.md`.
@@ -141,9 +141,11 @@ can stop it.
   - Both engines already capture chat into signals.
   - A message from any non-bot participant that exactly matches the stop keyword (OQ-2) ends
     the meeting through the normal leave path within one monitor tick (≤10s).
-  - The recording is handled per OQ-2.
+  - The recording is **kept** and processed normally (OQ-2: leave only, no deletion).
   - Outcome: `stopped_by_participant`.
-- **Announcement failure** (chat disabled, selector broken): OQ-4.
+- **Announcement failure** (chat disabled, selector broken): the bot **keeps recording**
+  (OQ-4). The attempt is recorded as `consent_not_posted` (a warning, not a failure) and the
+  digest says plainly that participants were not notified.
 - **Re-announcement.** If the bot rejoins after a retry, it posts again. It never posts more
   than once per attempt.
 
@@ -152,9 +154,10 @@ can stop it.
   unit-tested with the FakePage / vm patterns.
 - The stop keyword is case-insensitive, must be the whole message, and is ignored when it
   comes from the bot itself or another bot.
-- Stop → leave ≤10s → recording handled per OQ-2 → digest (#3) states that it was stopped
+- Stop → leave ≤10s → recording kept and transcribed → digest (#3) states that it was stopped
   and by whom.
-- If the announcement fails, behaviour follows OQ-4 and is recorded with a reason.
+- If the announcement fails, recording continues, `consent_not_posted` is recorded, and the
+  digest flags it.
 
 **Risks.**
 - Chat UIs are among the most volatile surfaces. Zoom's chat sits in an iframe, and Teams
@@ -171,11 +174,14 @@ channel serves both needs.
 **Design.**
 - **`Notifier` interface:** `send({ kind: 'digest' | 'alert' | 'resolved', title, body,
   links })`.
-- **Channels:** configured as a list (OQ-5). Candidates:
-  - `email`: via `ms365 mail send`, which reuses the existing ms365 auth with no new
-    credentials. Verified that the installed CLI supports `--to --subject --body --html`.
-  - `slack`: incoming webhook URL.
-  - `file`: a Markdown note per meeting in a folder, e.g. an Obsidian vault.
+- **Channel: Markdown notes folder** (OQ-5). Config `notify.folder`, default `~/MiBot Notes`.
+  - One note per meeting: `YYYY-MM-DD HHmm <title>.md`, with front matter (date, platform,
+    duration, participants, outcome) so the folder works as an Obsidian/notes vault.
+  - Alerts go to `ALERTS.md` at the top of the folder, newest first, with `resolved` entries
+    appended to the same item. Trade-off, accepted: a folder isn't pushed to you, so alerts
+    are seen when you open your notes, not at the moment they fire.
+  - Email (`ms365 mail send`, verified available) and Slack stay behind the same `Notifier`
+    interface as future channels; not built in this wave.
 - **Outbox.**
   - Table `notifications (id, kind, dedupe_key, payload, status, attempts, next_attempt_at,
     created_at)`.
@@ -198,7 +204,7 @@ channel serves both needs.
   - A transcription that gave up (Wave 9-B cap) or ended `transcribe_failed`.
   - The watcher restarting after a crash (recovery found its rows).
   - Self-test failure (#6).
-- **Config:** `notify.channels`, `notify.digest: 'each' | 'daily' | 'off'`,
+- **Config:** `notify.folder`, `notify.digest: 'each' | 'off'` (OQ-6: one per meeting),
   `notify.alerts: boolean`.
 
 **Acceptance criteria.**
@@ -207,7 +213,9 @@ channel serves both needs.
 - Outbox retry and dedupe are tested with an injected clock and a failing channel. The
   pipeline completes even when every channel fails.
 - Each alert rule has a test that triggers and resolves it.
-- Each configured channel is verified live once.
+- Notes are written atomically (temp file + rename) and never overwrite a note the user has
+  edited: a second write for the same meeting creates `… (2).md`.
+- The notes folder is verified live once (open it in your notes app).
 
 ---
 
@@ -258,7 +266,9 @@ audio path. Breakage is discovered during a real meeting.
   - Disk space above a threshold.
   - DB migrations current.
 - **`mibot selftest --live <platform>`.**
-  - Joins the operator's test meeting (OQ-9) with the recorder bot.
+  - Joins the operator's test meeting with the recorder bot. The operator is setting up one
+    room per platform (OQ-9), configured as `selftest.testMeetings.<platform>`; until then
+    the live mode reports "no test meeting configured" and only preflight runs.
   - Launches a second headless "speaker" browser into the same meeting, using Chromium's
     fake media flags (`--use-file-for-fake-audio-capture=<tone.wav>`) so it plays a known
     tone.
@@ -319,7 +329,7 @@ audio path. Breakage is discovered during a real meeting.
 - **Config keys (defaults):**
   - `consentMessage` (OQ-1), `consentStopKeyword` (OQ-2), `consentOnFailure` (OQ-4).
   - `botNameSuffix` (OQ-3).
-  - `notify` (OQ-5/6).
+  - `notify.folder`, `notify.digest`, `notify.alerts` (OQ-5/6).
   - `skipKeyword` / `forceKeyword` (OQ-7/8).
   - `selftest.testMeetings` (OQ-9).
 - **Engineering rules** (as in Waves 7–9):
@@ -331,26 +341,26 @@ audio path. Breakage is discovered during a real meeting.
 ## 6. Live verification checklist (cannot be proven by tests)
 
 - [ ] #2: announcement posts in Teams, Zoom and Meet; the stop keyword ends each.
-- [ ] #3: a real digest arrives on each configured channel after a real meeting.
+- [ ] #3: a real meeting produces a correct note in the notes folder.
 - [ ] #4: an expired-login alert fires and resolves.
 - [ ] #6: `selftest --live` passes on at least one platform, and fails correctly when muted.
 - [ ] #1: `mibot report` after a week of real use; this is the baseline for future reliability work.
 
-## 7. Open questions
+## 7. Decisions
 
-| # | Question | Recommended default |
+| # | Question | Decision |
 |---|---|---|
-| **OQ-1** | Exact consent message text. | "Hi — I'm MiBot, recording and transcribing this meeting for [operator]. Type **!stop** in chat and I'll leave." |
-| **OQ-2** | `!stop`: leave only, or leave **and delete** the recording? Deletion is irreversible. | Leave, and **delete** the audio and transcript of that meeting (the safer legal default); the digest records that it was stopped. |
-| **OQ-3** | Add a visible display-name suffix, e.g. "MiBot (recording)"? | Yes. |
-| **OQ-4** | If the announcement can't be posted (chat disabled / broken): keep recording, or leave? | Leave and record `consent_not_posted`. Recording without disclosure is the exposure #2 exists to remove. |
-| **OQ-5** | Notification channel(s): email (via ms365, no new credentials), Slack webhook, Markdown folder, or several? | Email via ms365 to your own address. |
-| **OQ-6** | Digest cadence: one per meeting, or a daily roll-up? | One per meeting; alerts always immediate. |
-| **OQ-7** | Skip keyword. | `[no-bot]` in title or description. |
-| **OQ-8** | Also support a force-join keyword that overrides `onlyOrganized` / `minAttendees`? | Yes: `[bot]`. |
-| **OQ-9** | Test meeting URLs per platform for `selftest --live`; can they be joined without admission? | You supply one persistent room per platform you use; Meet room set to open access. |
-| **OQ-10** | Run the live self-test on a schedule (e.g. nightly), or only on demand? | Preflight daily; live on demand only, since it occupies a meeting room. |
-| **OQ-11** | Should the digest go to meeting participants too, or only the operator? | Operator only. Sharing with participants is a separate consent and privacy decision. |
+| **OQ-1** | Consent message text. | Default: "Hi — I'm MiBot, recording and transcribing this meeting for [operator]. Type **!stop** in chat and I'll leave." (configurable) |
+| **OQ-2** | `!stop`: leave only, or leave and delete? | **Operator: leave only.** The recording is kept and processed. |
+| **OQ-3** | Display-name suffix "(recording)"? | Default: yes (configurable). |
+| **OQ-4** | Announcement can't be posted: keep recording or leave? | **Operator: keep recording.** Logged as `consent_not_posted`; flagged in the digest. |
+| **OQ-5** | Notification channel. | **Operator: Markdown notes folder.** Email/Slack deferred behind the same interface. |
+| **OQ-6** | Digest cadence. | Default: one note per meeting; alerts immediate (to `ALERTS.md`). |
+| **OQ-7** | Skip keyword. | Default: `[no-bot]` in title or description. |
+| **OQ-8** | Force-join keyword. | Default: `[bot]`. |
+| **OQ-9** | Self-test meeting rooms. | **Operator is setting them up.** Live self-test is built now, verified once rooms exist. |
+| **OQ-10** | Live self-test schedule. | Default: preflight daily; live on demand. |
+| **OQ-11** | Digest recipients. | Default: operator only (it's a local folder). |
 
 ## 8. Backlog (Medium, not in this wave)
 
