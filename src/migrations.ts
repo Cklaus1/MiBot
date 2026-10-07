@@ -225,6 +225,20 @@ export const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, 'meetings', 'is_selftest', 'INTEGER DEFAULT 0');
     },
   },
+  {
+    version: 13,
+    name: 'transcript_fts: full-text search over transcripts and summaries (Wave 10 #7)',
+    up: (db) => {
+      // porter: "budget" finds "budgeting"; one row per transcript segment so hits carry who/when.
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
+          text, speaker,
+          kind UNINDEXED, meeting_id UNINDEXED, recording_id UNINDEXED, seg_start UNINDEXED,
+          tokenize = 'porter unicode61'
+        );
+      `);
+    },
+  },
 ];
 
 /**

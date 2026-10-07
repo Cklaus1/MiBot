@@ -11,7 +11,7 @@ import { sendCommand, parseControlResponse } from './control.js';
 import { safeParseArray, parseJoinArgs } from './cli.js';
 import { log, LOG_DIR } from './log.js';
 import { installShutdownHandlers, registerShutdownHook, runShutdown } from './shutdown.js';
-import { closeDb } from './db.js';
+import { closeDb, getDb } from './db.js';
 import { resumeTranscription } from './transcribe-resume.js';
 import { SyncSchedule, LAUNCH_TICK_MS } from './watch-clock.js';
 import { acquireInstanceLock } from './instance-lock.js';
@@ -19,6 +19,7 @@ import { prune, type PruneReport } from './prune.js';
 import { buildReport, formatReport } from './report.js';
 import { preflight, live as liveSelftest } from './selftest-run.js';
 import { formatPreflight, preflightPassed, explainCliFailure } from './selftest.js';
+import { reindexAll, searchTranscripts, formatSearch } from './search.js';
 import {
   channelFor, setAlertsEnabled, noticeAlert, raiseAlert, resolveAlert, enqueuePendingDigests, drainOutbox,
 } from './notify.js';
@@ -53,6 +54,7 @@ async function main(): Promise<void> {
     case 'unskip':   controlCommand('unskip', parseInt(args[1], 10)); break;
     case 'leave':    controlCommand('leave', parseInt(args[1], 10)); break;
     case 'selftest': await selftestCommand(args.slice(1)); break;
+    case 'search':   searchCommand(args.slice(1)); break;
     default:         printUsage(); break;
   }
 }
@@ -73,6 +75,28 @@ function pruneCommand(dryRun: boolean): void {
   console.log(`${verb}: ${r.logs.length} log file(s), ${r.audio.length} audio file(s), ${r.screenshotDirs.length} screenshot folder(s), ${r.meetingRows} empty meeting row(s) — ${(r.bytes / 1024 / 1024).toFixed(1)} MB`);
   console.log(`Limits: logs ${config.logRetentionDays || 'kept forever'}${config.logRetentionDays ? 'd' : ''}; recordings ${config.retentionDays ? config.retentionDays + 'd' : 'kept forever (set retentionDays in config.json to enable)'}. Transcripts are never deleted.`);
   if (dryRun) for (const f of [...r.logs, ...r.audio, ...r.screenshotDirs]) console.log(`  ${f}`);
+}
+
+function searchCommand(args: string[]): void {
+  const flag = (name: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+  const db = getDb();
+  const indexed = (db.prepare('SELECT COUNT(*) n FROM transcript_fts').get() as { n: number }).n;
+  const transcribed = (db.prepare('SELECT COUNT(*) n FROM recordings WHERE transcript_path IS NOT NULL').get() as { n: number }).n;
+  if (args.includes('--reindex') || (indexed === 0 && transcribed > 0)) {
+    const r = reindexAll();
+    console.error(`Indexed ${r.rows} passage(s) from ${r.recordings} transcript(s).`);
+    if (args.includes('--reindex') && args.filter((a) => !a.startsWith('--')).length === 0) return;
+  }
+  const valued = new Set(['--since', '--platform', '--speaker']);
+  const query = args.filter((a, i) => !a.startsWith('--') && !valued.has(args[i - 1] ?? '')).join(' ');
+  if (!query.trim()) { console.error('Usage: mibot search "<query>" [--since 30d] [--platform P] [--speaker S]'); process.exitCode = 1; return; }
+  const since = flag('--since');
+  const days = since ? parseInt(since, 10) : NaN;
+  const hits = searchTranscripts(query, {
+    sinceMs: Number.isFinite(days) ? Date.now() - days * 86_400_000 : undefined,
+    platform: flag('--platform'), speaker: flag('--speaker'),
+  });
+  console.log(formatSearch(hits, query));
 }
 
 async function selftestCommand(args: string[]): Promise<void> {
@@ -129,6 +153,8 @@ Usage:
   mibot skip <id> / unskip <id>  Don't join this meeting (survives calendar changes) / undo
   mibot leave <id>               Make a running bot leave now (recording is kept)
   mibot selftest [--live <platform> [--seconds N]]  Check the setup; --live records a test room
+  mibot search "<query>" [--since 30d] [--platform P] [--speaker S]  Search transcripts ("phrase", prefix*)
+  mibot search --reindex         Rebuild the search index from all transcripts
 
 Control commands:
   screenshot [path]              Take screenshot of bot's browser

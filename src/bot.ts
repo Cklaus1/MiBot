@@ -242,7 +242,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       if (haveAudio && !opts.selftest) {
         const outcome = await transcribe(recording.id, audioPath, result.participants, result.speakerTimeline);
         applyRecordingStatus(recording.id, outcome);
-        noteTranscriptionOutcome(outcome, title);
+        noteTranscriptionOutcome(outcome, title, recording.id);
       }
 
       updateMeetingStatus(meeting.id, 'done');
@@ -359,7 +359,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
         // audio, the recording is already terminal ('no_audio') and left untouched.
         const outcome = await transcribe(recording.id, audioPath, trackedParticipants, speakerTimeline);
         applyRecordingStatus(recording.id, outcome);
-        noteTranscriptionOutcome(outcome, title);
+        noteTranscriptionOutcome(outcome, title, recording.id);
       }
       updateMeetingStatus(meeting.id, 'done');
       finishJoinAttempt(attemptId, { outcome: 'completed' });

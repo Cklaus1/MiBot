@@ -46,7 +46,7 @@ export async function resumeTranscription(job: TranscriptionJob, deps: ResumeDep
   try {
     const outcome = await transcribe(job.recordingId, job.audioPath, job.participants, job.speakerTimeline);
     applyRecordingStatus(job.recordingId, outcome);
-    noteTranscriptionOutcome(outcome, `recording ${job.recordingId}`);
+    noteTranscriptionOutcome(outcome, `recording ${job.recordingId}`, job.recordingId);
     updateMeetingStatus(job.meetingId, 'done');
   } catch (err) {
     // Leave it 'recorded'/'processing': once our heartbeat stops it goes stale and is reclaimed.

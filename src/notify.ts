@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { getDb, listJoinAttempts, type Meeting, type Recording } from './db.js';
 import { buildDigest } from './digest.js';
+import { indexTranscript } from './search.js';
 import type { NotifyConfig } from './config.js';
 
 /**
@@ -205,7 +206,11 @@ export class NotesFolderChannel implements Channel {
 }
 
 /** Wave 10 #4: transcription failures raise an alert; the next success resolves it. */
-export function noteTranscriptionOutcome(outcome: string, title: string): void {
+export function noteTranscriptionOutcome(outcome: string, title: string, recordingId?: number): void {
+  // Wave 10 #7: a finished transcript is searchable immediately. Never let indexing break the pipeline.
+  if (outcome === 'done' && recordingId !== undefined) {
+    try { indexTranscript(recordingId); } catch (err) { console.error(`[mibot] Search indexing failed: ${(err as Error).message}`); }
+  }
   if (outcome === 'transcribe_failed') {
     raiseAlert('transcription', 'Transcription failed', `"${title}" could not be transcribed — check audioscript (the audio is kept).`);
   } else if (outcome === 'done') {
