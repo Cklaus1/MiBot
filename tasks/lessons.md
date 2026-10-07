@@ -209,3 +209,12 @@
 
 - **Avoid side effects while verifying.** A dry run that opens the production DB would apply
   pending migrations. Verify against a copy.
+
+## Wave 10 — check data provenance before drawing conclusions from it
+
+- **I built a PM review and a spec on polluted data.** "8 done vs 608 failed" came from the
+  production DB, which turned out to be ~90% test-fixture rows ("Test Meeting", "SQL Injection
+  Test") written before tests were isolated. The first thing #1's report showed was the fixture
+  titles. Before citing numbers from a dataset, look at a sample of the actual rows — titles,
+  URLs, sources, dates — not only the aggregates. And say where a number comes from, so a
+  wrong premise can be caught by the reader.

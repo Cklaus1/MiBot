@@ -10,19 +10,25 @@ backlog, listed at the end and in `tasks/opportunities.md`.
 
 ## 1. Why
 
-MiBot's core job (join, record, transcribe) mostly does not complete, and today nobody
-can tell why. Production DB snapshot (2026-10-07, read-only, before migrations v5–v7):
+> **Correction (2026-10-07, found by #1's own report).** The first draft said "MiBot's core
+> job mostly does not complete", citing 8 done vs 608 failed out of 1,066 meetings. **That was
+> wrong.** Most of those rows are test fixtures, written into the production DB by the test
+> suite before tests used isolated databases (March–July 2026):
+> - 952 of 1,066 rows have non-meeting join URLs. Top titles: "Test Meeting" (256),
+>   "SQL Injection Test" (196), "hb" (49), "Status Test" (38), "d3" (25).
+> - Of the 114 rows with real-looking URLs, many are manual development runs from
+>   2026-03-27/28 ("Zoom test", "Audio test FINAL", "chris and mibot"). Some test fixtures
+>   also use real-looking URLs (e.g. `https://zoom.us/j/123`).
+> - Only **16 rows came from the calendar**, all from 2026-03-31, all still `scheduled`: the
+>   watcher appears not to have run against the real calendar since then.
+>
+> So the honest picture is **no production baseline at all**, rather than a known high
+> failure rate. The case for #1 holds (nothing is measurable today), but its job is to
+> produce the first real baseline once MiBot runs on real meetings, not to explain an
+> existing one.
 
-| | done | failed | stuck (joining/in_call/processing) | scheduled |
-|---|---|---|---|---|
-| Teams | 4 | 534 | 43 | 344 |
-| Zoom | 2 | 62 | 10 | 19 |
-| Meet | 2 | 12 | 0 | 34 |
-
-Across 1,066 meetings there are **12 transcripts**. Some of these rows are dev/test pollution,
-and Waves 7–9 fixed several root causes: silent recordings, single-page sync, one-shot joins,
-and false stale-kills. But no row records *why* it failed. So we can't measure whether those
-fixes worked, and every further reliability fix is a guess.
+MiBot has no record of how it performs on real meetings, and no row records *why* anything
+failed. So once it is running for real, every reliability fix would be a guess.
 
 Beyond reliability:
 - **No disclosure.** The bot records silently, with no notice and no way for participants to
