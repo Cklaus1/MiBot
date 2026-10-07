@@ -247,3 +247,7 @@ apply to the production DB the next time any mibot command opens it.
 Spec: tasks/spec-wave10.md — #1 failure diagnostics, #2 consent + stop, #3/#4 notifier (digest +
 alerts), #5 per-meeting control, #6 self-test, #7 search. 11 open questions (§7), each with a
 recommended default. Build order #1 → #2 → #3+#4 → #5 → #6 → #7.
+- [x] Test-row cleanup (2026-10-07, user-approved): deleted 998 test-fixture meetings + 617 recording rows
+      (non-meeting links, or the `https://zoom.us/j/123` fixture; never calendar-sourced rows; no audio
+      files existed). Kept 68: 16 calendar meetings + 52 March manual runs. Backup:
+      ~/.config/mibot/mibot.db.bak-20261007-142134-before-test-row-cleanup (integrity ok, 1066 rows).
