@@ -2,13 +2,14 @@ import {
   drainAudioOnce, DrainState, buildReadExpr, buildAckExpr, appendToSegment, assembleSegments,
   type DrainDeps, type ReadResult,
 } from './audio-drain.js';
-import { type Browser as PWBrowser } from 'playwright';
+import { type Browser as PWBrowser, type Page } from 'playwright';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import {
   getOrCreateMeeting, insertRecording, updateMeetingStatus, updateRecording,
   updateMeeting, getMeeting, updateHeartbeat, transaction, applyRecordingStatus, handleJoinFailure,
+  startJoinAttempt, markAttemptJoined, finishJoinAttempt, listJoinAttempts,
 } from './db.js';
 import { RECORDING_STATUS } from './status.js';
 import { loadConfig, isBot } from './config.js';
@@ -21,6 +22,7 @@ import { waitForMeetingEnd, SpeakerTracker } from './meeting.js';
 import { RosterTracker } from './roster.js';
 import { LeavePolicy } from './leave-policy.js';
 import { ShareScreenshots, MAX_SCREENSHOTS } from './image-similarity.js';
+import { classifyJoinFailure, captureFailureContext } from './diagnostics.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
 import { type CaptureSession, webrtcAudioPathFor, hasUsableAudio } from './capture-session.js';
 import { transcribe } from './transcribe.js';
@@ -31,6 +33,8 @@ import { isNavTimeout, closeOrKill } from './bot-teardown.js';
 import { log } from './log.js';
 
 export const RECORDINGS_DIR = path.join(os.homedir(), '.config', 'mibot', 'recordings');
+/** Failure screenshots (Wave 10 #1) live under recordings so retention covers them. */
+export const FAILURES_DIR = path.join(RECORDINGS_DIR, 'failures');
 
 /** Detect platform from a meeting URL. */
 export function detectPlatform(url: string): 'zoom' | 'teams' | 'meet' | null {
@@ -119,6 +123,10 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
 
   // Claim the row: recovery only fails a stale meeting whose owner process is gone (Wave 9-A).
   updateMeeting(meeting.id, { status: 'joining', owner_pid: process.pid });
+  // Wave 10 #1: one attempt row per bot run, so retries keep their history and a failure says why.
+  const attemptId = startJoinAttempt(meeting.id);
+  let reachedCall = false;
+  let pwPage: Page | null = null; // kept for the failure screenshot
 
   let controlChannel: ControlChannel | null = null;
   let browser: PWBrowser | null = null;
@@ -177,6 +185,8 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       await engine.run(playbook);
 
       updateMeeting(meeting.id, { status: 'in_call', actual_start: new Date().toISOString() });
+      reachedCall = true;
+      markAttemptJoined(attemptId);
       console.error('[mibot] In call (via camofox). Monitoring...');
 
       // Install signal observer + audio capture
@@ -216,6 +226,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       }
 
       updateMeetingStatus(meeting.id, 'done');
+      finishJoinAttempt(attemptId, { outcome: 'completed' });
       return recording.id;
 
     } else {
@@ -223,6 +234,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       const launch = await launchBrowser();
       browser = launch.browser;
       const page = launch.page;
+      pwPage = page;
 
       // FA/R4 (AU1/AU2): one hook, installed on the context so it runs in every frame
       // (Zoom's iframe WebRTC) and survives navigation. Must precede the first goto.
@@ -253,6 +265,8 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       await engine.run(playbook);
 
       updateMeeting(meeting.id, { status: 'in_call', actual_start: new Date().toISOString() });
+      reachedCall = true;
+      markAttemptJoined(attemptId);
       console.error('[mibot] In call. Recording...');
 
       captureSession = startAudioCapture(page, audioPath);
@@ -323,14 +337,26 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
         applyRecordingStatus(recording.id, outcome);
       }
       updateMeetingStatus(meeting.id, 'done');
+      finishJoinAttempt(attemptId, { outcome: 'completed' });
       return recording.id;
     }
 
   } catch (err) {
     log.error(`Bot error: ${(err as Error).message}`, { meetingId: meeting.id });
+    // Wave 10 #1: capture what the bot was looking at, classify why it failed, record it on the
+    // attempt (and on the meeting if this failure is terminal). Bounded and never throws.
+    const attemptNo = listJoinAttempts(meeting.id).find((a) => a.id === attemptId)?.attempt ?? 0;
+    const ctx = await captureFailureContext({
+      page: pwPage, camofox: camofoxPage, failuresDir: FAILURES_DIR, name: `${meeting.id}-${attemptNo}`,
+    });
+    const diag = classifyJoinFailure({ err, platform, pageText: ctx.pageText, reachedCall });
+    finishJoinAttempt(attemptId, { outcome: 'failed', reason: diag.reason, step: diag.step, detail: diag.detail, screenshot: ctx.screenshotPath });
+    console.error(`[mibot] Failure: ${diag.reason}${diag.step ? ` @ ${diag.step}` : ''}${ctx.screenshotPath ? ` (screenshot ${ctx.screenshotPath})` : ''}`);
     // A failed JOIN of a calendar meeting is retried with backoff until the meeting ends; any
     // other failure (after in_call, manual join, meeting over) is terminal as before.
-    const plan = handleJoinFailure(meeting.id);
+    const plan = handleJoinFailure(meeting.id, Date.now(), {
+      reason: diag.reason, detail: [diag.step, diag.detail].filter(Boolean).join(' — '),
+    });
     if (plan.retry) {
       console.error(`[mibot] Join attempt ${plan.attempt} failed — retrying in ${Math.round(plan.delayMs / 60000)} min (until the meeting ends)`);
     }

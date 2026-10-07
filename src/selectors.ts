@@ -24,6 +24,14 @@ export interface PlatformSelectors {
    *  brittle: minified classes). Stable attribute-based speaker checks
    *  (data-*, aria-*) stay in code; only these fallback overlays live here. */
   activeSpeaker: string[];
+  /**
+   * Wave 10 #1: on-screen PHRASES (case-insensitive substrings, not CSS) that explain a failed
+   * join. Localized and liable to change, hence config-driven like the selectors above.
+   */
+  waitingRoomText: string[];
+  notStartedText: string[];
+  notAdmittedText: string[];
+  authRequiredText: string[];
 }
 
 export type Platform = 'meet' | 'teams' | 'zoom';
@@ -34,14 +42,26 @@ export const DEFAULT_SELECTORS: Record<Platform, PlatformSelectors> = {
     participantNames: ['[data-participant-id]', '[data-self-name]', '.zWfAib'],
     // '.KV1GEc' / '.cS7aqe.NkoVdd' are Meet's minified speaker-overlay classes.
     activeSpeaker: ['.KV1GEc', '.cS7aqe.NkoVdd'],
+    waitingRoomText: ['Asking to join', 'Please wait until a meeting host brings you into the call', 'You\'ll join the call when someone lets you in'],
+    notStartedText: ['waiting for the host', 'This meeting hasn\'t started'],
+    notAdmittedText: ["You can't join this video call", 'No one responded to your request', 'denied your request to join', 'You have been removed from the meeting'],
+    authRequiredText: ['Sign in to join', 'Sign in with your Google Account', 'Use your Google Account'],
   },
   teams: {
     participantNames: ['[data-tid="participantItem"]', '.ui-chat__messagecontent', '[role="listitem"]'],
     activeSpeaker: ['[data-tid="video-stream-label"]', '[data-tid="active-speaker-name"]'],
+    waitingRoomText: ['Someone in the meeting should let you in soon', 'Waiting for someone to let you in', 'in the lobby'],
+    notStartedText: ['The meeting hasn\'t started', 'Waiting for the organizer'],
+    notAdmittedText: ['denied access to the meeting', 'Nobody responded to your request to join', 'You\'ve been removed from this meeting'],
+    authRequiredText: ['Sign in to join this meeting', 'Pick an account', 'Sign in to your account', 'only people with access'],
   },
   zoom: {
     participantNames: ['[class*="participant"]', '.participants-item__display-name', '[class*="attendee"]'],
     activeSpeaker: ['.speaker-active-container__name', '[class*="active-speaker"] [class*="display-name"]'],
+    waitingRoomText: ['the meeting host will let you in soon', 'Host has joined. We\'ve let them know you\'re here', 'waiting room'],
+    notStartedText: ['Waiting for the host to start this meeting', 'Waiting for host to start the meeting', 'The meeting has not started'],
+    notAdmittedText: ['removed you from the meeting', 'The host has removed you', 'meeting has been locked', 'Meeting passcode is incorrect'],
+    authRequiredText: ['Sign in to join', 'This meeting is for authorized attendees only', 'Authorized attendees only'],
   },
 };
 
@@ -71,17 +91,23 @@ export function loadSelectors(platform: string): PlatformSelectors {
   const cached = _cache.get(platform);
   if (cached) return cached;
 
-  const base = DEFAULT_SELECTORS[platform as Platform] ?? { participantNames: [], activeSpeaker: [] };
-  let merged: PlatformSelectors = { participantNames: [...base.participantNames], activeSpeaker: [...base.activeSpeaker] };
+  const empty: PlatformSelectors = {
+    participantNames: [], activeSpeaker: [], waitingRoomText: [], notStartedText: [], notAdmittedText: [], authRequiredText: [],
+  };
+  const base = DEFAULT_SELECTORS[platform as Platform] ?? empty;
+  const merged = Object.fromEntries(
+    (Object.keys(empty) as (keyof PlatformSelectors)[]).map((k) => [k, [...base[k]]]),
+  ) as unknown as PlatformSelectors;
 
   const overridePath = path.join(SELECTORS_DIR, `${platform}.json`);
   if (fs.existsSync(overridePath)) {
     try {
       const override = JSON.parse(fs.readFileSync(overridePath, 'utf8')) as Record<string, unknown>;
-      const pn = sanitizeSelectorList(override.participantNames);
-      const as = sanitizeSelectorList(override.activeSpeaker);
-      if (pn) merged.participantNames = pn;
-      if (as) merged.activeSpeaker = as;
+      // Every key: an override list replaces that default list wholesale; invalid lists are ignored.
+      for (const k of Object.keys(merged) as (keyof PlatformSelectors)[]) {
+        const list = sanitizeSelectorList(override[k]);
+        if (list) merged[k] = list;
+      }
       console.error(`[mibot] Loaded selector override: ${overridePath}`);
     } catch (err) {
       console.error(`[mibot] Warning: invalid selectors at ${overridePath}, using defaults — ${(err as Error).message}`);

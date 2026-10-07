@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { planJoinRetry, DEFAULT_MEETING_MINUTES, type JoinRetryPlan } from './join-retry.js';
+import type { FailureReason } from './status.js';
 import {
   isTerminalRecordingStatus, TERMINAL_RECORDING_STATUSES, isKnownMeetingStatus,
   legalPredecessorsOf, type RecordingStatus, type MeetingStatus,
@@ -102,6 +103,9 @@ export interface Meeting {
   owner_pid: number | null;
   /** 1 if the calendar says I organized it, 0 if not, null if unknown (onlyOrganized). */
   is_organizer: number | null;
+  /** Why it didn't produce a recording (Wave 10 #1); set on terminal failure. */
+  failure_reason: string | null;
+  failure_detail: string | null;
   status: string;
   created_at: string;
 }
@@ -181,7 +185,7 @@ const MEETING_COLUMNS = new Set([
   'title', 'platform', 'join_url', 'start_time', 'end_time', 'actual_start', 'actual_end',
   'calendar_event_id', 'organizer', 'organizer_email', 'location', 'description',
   'attendees', 'is_recurring', 'recurrence_id', 'status', 'participants', 'speaker_timeline',
-  'heartbeat', 'owner_pid', 'is_organizer',
+  'heartbeat', 'owner_pid', 'is_organizer', 'failure_reason', 'failure_detail',
 ]);
 
 export function updateMeeting(id: number, updates: Record<string, unknown>): void {
@@ -362,9 +366,19 @@ export function recoverStaleMeetings(
       WHERE status NOT IN (${TERMINAL_RECORDING_SQL})
         AND meeting_id IN (${ids})
     `).run(...dead);
+    const now = new Date().toISOString();
+    // Wave 10 #1: the dead bot's open attempt and the meeting both say why.
+    db.prepare(`
+      UPDATE join_attempts SET ended_at = ?, outcome = 'failed', reason = 'crashed',
+        detail = COALESCE(detail, 'bot process died (stale heartbeat)')
+      WHERE meeting_id IN (${ids}) AND ended_at IS NULL
+    `).run(now, ...dead);
     // Re-check staleness in the UPDATE itself so a row that heartbeated meanwhile is spared.
-    return db.prepare(`UPDATE meetings SET status = 'failed' WHERE id IN (${ids}) AND ${staleWhere}`)
-      .run(...dead).changes;
+    return db.prepare(`
+      UPDATE meetings SET status = 'failed', failure_reason = 'crashed',
+        failure_detail = 'bot process died (stale heartbeat)'
+      WHERE id IN (${ids}) AND ${staleWhere}
+    `).run(...dead).changes;
   });
   return recover();
 }
@@ -378,7 +392,7 @@ export function recoverStaleMeetings(
 export function sweepMissedMeetings(): number {
   const db = getDb();
   return db.prepare(`
-    UPDATE meetings SET status = 'missed'
+    UPDATE meetings SET status = 'missed', failure_reason = 'missed'
     WHERE status = 'scheduled'
       AND ${EFFECTIVE_END_SQL} <= datetime('now')
   `).run().changes;
@@ -442,7 +456,11 @@ export function getUpcomingMeetings(withinMinutes: number): Meeting[] {
  * The retry write is guarded on status = 'joining' (raw SQL, like cancel/revive): if the row
  * moved on in the meantime, the stale plan is discarded and it's failed through the normal guard.
  */
-export function handleJoinFailure(id: number, nowMs: number = Date.now()): JoinRetryPlan {
+export function handleJoinFailure(
+  id: number,
+  nowMs: number = Date.now(),
+  failure: { reason: FailureReason; detail?: string } = { reason: 'internal_error' },
+): JoinRetryPlan {
   const row = getMeeting(id);
   if (!row) return { retry: false, reason: 'not-a-join-failure' };
   const plan = planJoinRetry(row, nowMs);
@@ -455,7 +473,8 @@ export function handleJoinFailure(id: number, nowMs: number = Date.now()): JoinR
     ).run(plan.nextJoinAt, new Date(nowMs).toISOString(), id);
     if (res.changes > 0) return plan;
   }
-  updateMeetingStatus(id, 'failed');
+  // Terminal: the reason lands on the meeting in the same guarded write as the status (#1).
+  updateMeeting(id, { status: 'failed', failure_reason: failure.reason, failure_detail: failure.detail ?? null });
   return plan.retry ? { retry: false, reason: 'not-a-join-failure' } : plan;
 }
 
@@ -497,7 +516,7 @@ export function getScheduledEventIds(prefix: string): string[] {
  *  Guarded on status='scheduled' so a race with join can't cancel a live meeting. */
 export function cancelMeeting(eventId: string): boolean {
   const res = getDb().prepare(
-    `UPDATE meetings SET status = 'cancelled', heartbeat = ?
+    `UPDATE meetings SET status = 'cancelled', failure_reason = 'cancelled', heartbeat = ?
      WHERE calendar_event_id = ? AND status = 'scheduled'`,
   ).run(new Date().toISOString(), eventId);
   return res.changes > 0;
@@ -515,7 +534,7 @@ export function reviveCancelledMeeting(
   id: number,
   fields: { start_time?: string; end_time?: string | null; join_url?: string; title?: string },
 ): boolean {
-  const sets = ["status = 'scheduled'", 'heartbeat = ?'];
+  const sets = ["status = 'scheduled'", 'failure_reason = NULL', 'failure_detail = NULL', 'heartbeat = ?'];
   const vals: unknown[] = [new Date().toISOString()];
   for (const [k, v] of Object.entries(fields)) {
     if (v === undefined || !MEETING_COLUMNS.has(k)) continue;
@@ -527,6 +546,53 @@ export function reviveCancelledMeeting(
     `UPDATE meetings SET ${sets.join(', ')} WHERE id = ? AND status = 'cancelled'`,
   ).run(...vals);
   return res.changes > 0;
+}
+
+// ── Join attempts (Wave 10 #1) ───────────────────────────────────────────
+
+export interface JoinAttempt {
+  id: number;
+  meeting_id: number;
+  attempt: number;
+  started_at: string;
+  joined_at: string | null;
+  ended_at: string | null;
+  outcome: 'completed' | 'failed' | null;
+  reason: string | null;
+  step: string | null;
+  detail: string | null;
+  screenshot_path: string | null;
+}
+
+/** Open one attempt row for a bot run. Numbered per meeting, so join retries keep their history. */
+export function startJoinAttempt(meetingId: number): number {
+  const db = getDb();
+  const next = (db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM join_attempts WHERE meeting_id = ?')
+    .get(meetingId) as { n: number }).n;
+  return Number(db.prepare('INSERT INTO join_attempts (meeting_id, attempt, started_at) VALUES (?, ?, ?)')
+    .run(meetingId, next, new Date().toISOString()).lastInsertRowid);
+}
+
+/** The bot reached in_call on this attempt (join time = joined_at - started_at). */
+export function markAttemptJoined(attemptId: number): void {
+  getDb().prepare('UPDATE join_attempts SET joined_at = ? WHERE id = ? AND joined_at IS NULL')
+    .run(new Date().toISOString(), attemptId);
+}
+
+/** Close an attempt. Only an open one: recovery may already have closed it as 'crashed'. */
+export function finishJoinAttempt(attemptId: number, r: {
+  outcome: 'completed' | 'failed'; reason?: string; step?: string; detail?: string; screenshot?: string;
+}): void {
+  getDb().prepare(`
+    UPDATE join_attempts SET ended_at = ?, outcome = ?, reason = ?, step = ?, detail = ?, screenshot_path = ?
+    WHERE id = ? AND ended_at IS NULL
+  `).run(new Date().toISOString(), r.outcome, r.reason ?? null, r.step ?? null, r.detail ?? null,
+    r.screenshot ?? null, attemptId);
+}
+
+export function listJoinAttempts(meetingId: number): JoinAttempt[] {
+  return getDb().prepare('SELECT * FROM join_attempts WHERE meeting_id = ? ORDER BY attempt')
+    .all(meetingId) as JoinAttempt[];
 }
 
 export function getRecording(id: number): Recording | undefined {

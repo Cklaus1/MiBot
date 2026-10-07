@@ -15,6 +15,7 @@ import { resumeTranscription } from './transcribe-resume.js';
 import { SyncSchedule, LAUNCH_TICK_MS } from './watch-clock.js';
 import { acquireInstanceLock } from './instance-lock.js';
 import { prune, type PruneReport } from './prune.js';
+import { buildReport, formatReport } from './report.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -41,6 +42,7 @@ async function main(): Promise<void> {
     case 'send':     await sendCmd(parseInt(args[1], 10), args.slice(2).join(' ')); break;
     case 'status':   showStatus(); break;
     case 'prune':    pruneCommand(args.includes('--dry-run')); break;
+    case 'report':   reportCommand(args.slice(1)); break;
     default:         printUsage(); break;
   }
 }
@@ -63,6 +65,13 @@ function pruneCommand(dryRun: boolean): void {
   if (dryRun) for (const f of [...r.logs, ...r.audio, ...r.screenshotDirs]) console.log(`  ${f}`);
 }
 
+function reportCommand(args: string[]): void {
+  const flag = (name: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+  const days = Math.max(1, parseInt(flag('--days') ?? '30', 10) || 30);
+  const platform = flag('--platform');
+  console.log(formatReport(buildReport({ sinceMs: Date.now() - days * 86_400_000, platform }), days));
+}
+
 function printUsage(): void {
   console.log(`mibot — AI meeting bot
 
@@ -77,6 +86,7 @@ Usage:
   mibot status                   Show running bots + health
   mibot send <id> <command>      Send command to running bot
   mibot prune [--dry-run]        Delete old logs (and, if retentionDays is set, old audio)
+  mibot report [--days N] [--platform P]  Success rate, failure reasons, recent failures
 
 Control commands:
   screenshot [path]              Take screenshot of bot's browser

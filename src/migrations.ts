@@ -142,6 +142,33 @@ export const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, 'meetings', 'is_organizer', 'INTEGER');
     },
   },
+  {
+    version: 8,
+    name: 'failure diagnostics: join_attempts + meetings.failure_reason/detail (Wave 10 #1)',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS join_attempts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+          attempt INTEGER NOT NULL,
+          started_at TEXT NOT NULL,
+          joined_at TEXT,
+          ended_at TEXT,
+          outcome TEXT,
+          reason TEXT,
+          step TEXT,
+          detail TEXT,
+          screenshot_path TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_join_attempts_meeting ON join_attempts(meeting_id);
+      `);
+      addColumnIfMissing(db, 'meetings', 'failure_reason', 'TEXT');
+      addColumnIfMissing(db, 'meetings', 'failure_detail', 'TEXT');
+      // Existing failures predate diagnostics: label them so reports separate old noise from new data.
+      db.exec(`UPDATE meetings SET failure_reason = 'unknown_legacy'
+               WHERE status IN ('failed', 'missed', 'cancelled') AND failure_reason IS NULL`);
+    },
+  },
 ];
 
 /**

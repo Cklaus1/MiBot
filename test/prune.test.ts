@@ -133,3 +133,16 @@ describe('recordings', () => {
     expect(getMeeting(m.id)).toBeDefined();
   });
 });
+
+describe('failure screenshots (Wave 10 #1)', () => {
+  it('are pruned with their old finished meeting, and only theirs', () => {
+    const w = world();
+    const old = meeting(w, 100, 'failed', false);
+    const recent = meeting(w, 5, 'failed', false);
+    const oldShot = touch(path.join(w.recordingsDir, 'failures', `${old.m.id}-1.png`));
+    const recentShot = touch(path.join(w.recordingsDir, 'failures', `${recent.m.id}-1.png`));
+    prune({ ...base(w), retentionDays: 90, logRetentionDays: 30 });
+    expect(fs.existsSync(oldShot)).toBe(false);
+    expect(fs.existsSync(recentShot)).toBe(true);
+  });
+});

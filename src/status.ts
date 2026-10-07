@@ -38,6 +38,19 @@ export const MEETING_STATUS = {
 export type MeetingStatus =
   (typeof MEETING_STATUS)[keyof typeof MEETING_STATUS];
 
+/**
+ * Wave 10 #1: why a meeting (or one join attempt) didn't produce a recording. A closed set so
+ * `mibot report` can aggregate it; the free-text specifics go in failure_detail / attempt.detail.
+ */
+export const FAILURE_REASONS = [
+  'join_step_failed', 'waiting_room_timeout', 'meeting_not_started', 'not_admitted', 'auth_required',
+  'unsupported_url', 'browser_launch_failed', 'camofox_unavailable',
+  'error_in_call', 'crashed', 'internal_error',
+  'no_audio', 'transcribe_failed', 'missed', 'cancelled', 'skipped', 'stopped_by_participant',
+  'unknown_legacy',
+] as const;
+export type FailureReason = (typeof FAILURE_REASONS)[number];
+
 /** The terminal recording statuses, as an ordered list. Exported so the DB layer can express
  *  the C7 "never downgrade a terminal outcome" rule as a SQL WHERE clause built from THIS
  *  list — one source of truth, rather than a hand-copied literal that can drift. */

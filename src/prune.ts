@@ -99,9 +99,15 @@ export function prune(opts: PruneOptions): PruneReport {
     }
 
     const ids = db.prepare(`SELECT id FROM meetings WHERE ${oldFinished()}`).all(cutoffIso) as { id: number }[];
+    const failuresDir = path.join(opts.recordingsDir, 'failures');
+    const failureShots = fs.existsSync(failuresDir) ? fs.readdirSync(failuresDir) : [];
     for (const { id } of ids) {
       const d = path.join(opts.recordingsDir, `screenshots-${id}`);
       if (fs.existsSync(d)) { report.screenshotDirs.push(d); remove(d, true); }
+      // Wave 10 #1 failure screenshots: failures/<meetingId>-<attempt>.<ext>
+      for (const f of failureShots) {
+        if (f.startsWith(`${id}-`)) { const p = path.join(failuresDir, f); report.audio.push(p); remove(p); }
+      }
     }
 
     const rowsWhere = `${oldFinished()} AND NOT EXISTS (SELECT 1 FROM recordings r WHERE r.meeting_id = meetings.id)`;

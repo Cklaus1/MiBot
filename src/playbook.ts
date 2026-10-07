@@ -80,6 +80,27 @@ export function defaultScreenshotPath(num: number): string {
 // ── Camofox Playbook Engine ───────────────────────────────────────────
 
 /** Playbook engine for camofox-backed browsers (Google Meet). */
+/**
+ * Wave 10 #1: a required playbook step failed. Carries WHICH step, so a failed join records
+ * "step 7: click role=button 'Join now'" instead of a bare 'not found' with no context.
+ */
+export class PlaybookStepError extends Error {
+  override name = 'PlaybookStepError';
+  constructor(
+    readonly stepIndex: number,
+    readonly action: string,
+    readonly target: string,
+    readonly cause: Error,
+  ) {
+    super(`step ${stepIndex} (${action} ${target}) failed: ${cause.message}`);
+  }
+
+  /** "step 7: click role=button "Join now"" */
+  get stepLabel(): string {
+    return `step ${this.stepIndex}: ${this.action}${this.target ? ' ' + this.target : ''}`;
+  }
+}
+
 export class CamofoxPlaybookEngine {
   private page: CamofoxPage;
   private vars: Record<string, string>;
@@ -103,7 +124,7 @@ export class CamofoxPlaybookEngine {
           console.error(`[playbook] Step ${i + 1} (optional) skipped: ${desc} — ${(err as Error).message}`);
         } else {
           console.error(`[playbook] Step ${i + 1} FAILED: ${desc} — ${(err as Error).message}`);
-          throw err;
+          throw new PlaybookStepError(i + 1, step.action, this.describeTarget(step), err as Error);
         }
       }
     }
@@ -351,7 +372,7 @@ export class PlaybookEngine {
           console.error(`[playbook] Step ${i + 1} (optional) skipped: ${desc} — ${(err as Error).message}`);
         } else {
           console.error(`[playbook] Step ${i + 1} FAILED: ${desc} — ${(err as Error).message}`);
-          throw err;
+          throw new PlaybookStepError(i + 1, step.action, this.describeTarget(step), err as Error);
         }
       }
     }
