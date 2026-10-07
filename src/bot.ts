@@ -24,6 +24,7 @@ import { RosterTracker } from './roster.js';
 import { LeavePolicy } from './leave-policy.js';
 import { ShareScreenshots, MAX_SCREENSHOTS } from './image-similarity.js';
 import { classifyJoinFailure, captureFailureContext } from './diagnostics.js';
+import { raiseAlert, resolveAlert, noteTranscriptionOutcome } from './notify.js';
 import { startAudioCapture, stopAudioCapture } from './audio.js';
 import { type CaptureSession, webrtcAudioPathFor, hasUsableAudio } from './capture-session.js';
 import { transcribe } from './transcribe.js';
@@ -194,6 +195,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       updateMeeting(meeting.id, { status: 'in_call', actual_start: new Date().toISOString() });
       reachedCall = true;
       markAttemptJoined(attemptId);
+      resolveJoinAlerts(platform);
       console.error('[mibot] In call (via camofox). Monitoring...');
 
       // Install signal observer + audio capture
@@ -232,6 +234,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       if (haveAudio) {
         const outcome = await transcribe(recording.id, audioPath, result.participants, result.speakerTimeline);
         applyRecordingStatus(recording.id, outcome);
+        noteTranscriptionOutcome(outcome, title);
       }
 
       updateMeetingStatus(meeting.id, 'done');
@@ -276,6 +279,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
       updateMeeting(meeting.id, { status: 'in_call', actual_start: new Date().toISOString() });
       reachedCall = true;
       markAttemptJoined(attemptId);
+      resolveJoinAlerts(platform);
       console.error('[mibot] In call. Recording...');
 
       captureSession = startAudioCapture(page, audioPath);
@@ -346,6 +350,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
         // audio, the recording is already terminal ('no_audio') and left untouched.
         const outcome = await transcribe(recording.id, audioPath, trackedParticipants, speakerTimeline);
         applyRecordingStatus(recording.id, outcome);
+        noteTranscriptionOutcome(outcome, title);
       }
       updateMeetingStatus(meeting.id, 'done');
       finishJoinAttempt(attemptId, { outcome: 'completed' });
@@ -363,6 +368,7 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     const diag = classifyJoinFailure({ err, platform, pageText: ctx.pageText, reachedCall });
     finishJoinAttempt(attemptId, { outcome: 'failed', reason: diag.reason, step: diag.step, detail: diag.detail, screenshot: ctx.screenshotPath });
     console.error(`[mibot] Failure: ${diag.reason}${diag.step ? ` @ ${diag.step}` : ''}${ctx.screenshotPath ? ` (screenshot ${ctx.screenshotPath})` : ''}`);
+    raiseJoinAlert(platform, diag.reason, title, diag.step);
     // A failed JOIN of a calendar meeting is retried with backoff until the meeting ends; any
     // other failure (after in_call, manual join, meeting over) is terminal as before.
     const plan = handleJoinFailure(meeting.id, Date.now(), {
@@ -385,6 +391,26 @@ export async function joinAndRecord(opts: BotOptions): Promise<number> {
     await closeBrowser();
     await closeCamofox();
   }
+}
+
+/**
+ * Wave 10 #4: failures that point at broken infrastructure or a broken playbook — not at one
+ * meeting's circumstances (lobby, denied) — raise an alert. The next successful join resolves it.
+ */
+function raiseJoinAlert(platform: string, reason: string, title: string, step?: string): void {
+  if (reason === 'camofox_unavailable') {
+    raiseAlert('camofox', 'Google Meet browser (camofox) is not running', `Couldn't join "${title}". Start it with: cd /root/projects/camofox-browser && npm start`);
+  } else if (reason === 'browser_launch_failed') {
+    raiseAlert('browser', 'The meeting browser fails to start', `Couldn't join "${title}" — Playwright Chromium did not launch.`);
+  } else if (reason === 'join_step_failed') {
+    raiseAlert(`playbook:${platform}`, `${platform} join flow is failing`,
+      `Couldn't join "${title}"${step ? ` at ${step}` : ''}. The ${platform} UI may have changed — check ~/.config/mibot/playbooks/${platform}.json.`);
+  }
+}
+
+function resolveJoinAlerts(platform: string): void {
+  resolveAlert(platform === 'meet' ? 'camofox' : 'browser', `Joined a ${platform} meeting successfully.`);
+  resolveAlert(`playbook:${platform}`, `The ${platform} join flow worked again.`);
 }
 
 /**

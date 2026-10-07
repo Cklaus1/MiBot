@@ -177,6 +177,39 @@ export const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, 'meetings', 'stopped_by', 'TEXT');
     },
   },
+  {
+    version: 10,
+    name: 'notifications outbox + alert state + meetings.notified_at (Wave 10 #3/#4)',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,            -- digest | alert | resolved
+          dedupe_key TEXT,
+          meeting_id INTEGER,
+          title TEXT NOT NULL,
+          payload TEXT NOT NULL,         -- markdown (digest) or text (alert)
+          status TEXT NOT NULL DEFAULT 'pending',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          sent_at TEXT,
+          last_error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_notifications_pending ON notifications(status, next_attempt_at);
+        CREATE TABLE IF NOT EXISTS alerts (
+          key TEXT PRIMARY KEY,
+          active INTEGER NOT NULL DEFAULT 0,
+          last_raised_at TEXT,
+          last_resolved_at TEXT
+        );
+      `);
+      addColumnIfMissing(db, 'meetings', 'notified_at', 'TEXT');
+      // Meetings that finished before digests existed don't get one retroactively.
+      db.exec(`UPDATE meetings SET notified_at = 'legacy'
+               WHERE status IN ('done', 'failed', 'missed', 'cancelled') AND notified_at IS NULL`);
+    },
+  },
 ];
 
 /**

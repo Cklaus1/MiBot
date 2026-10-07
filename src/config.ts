@@ -59,6 +59,18 @@ export interface MiBotConfig {
 
   /** Appended to the bot's display name so the recording is always visible, e.g. " (recording)". */
   botNameSuffix: string;
+
+  /** Wave 10 #3/#4: where post-meeting notes and ALERTS.md are written. */
+  notify: NotifyConfig;
+}
+
+export interface NotifyConfig {
+  /** Notes folder (Obsidian-friendly). `~` is expanded. */
+  folder: string;
+  /** 'each' = one note per finished meeting; 'off' = none. */
+  digest: 'each' | 'off';
+  /** Write operational alerts to ALERTS.md. */
+  alerts: boolean;
 }
 
 export const DEFAULTS: MiBotConfig = {
@@ -108,6 +120,7 @@ export const DEFAULTS: MiBotConfig = {
   consentMessage: DEFAULT_CONSENT_MESSAGE,
   consentStopKeyword: DEFAULT_STOP_KEYWORD,
   botNameSuffix: ' (recording)',
+  notify: { folder: '~/MiBot Notes', digest: 'each', alerts: true },
 };
 
 /** Numeric fields and their valid [min, max] ranges (inclusive). Anything outside the
@@ -158,6 +171,14 @@ export function validateConfig(input: Partial<MiBotConfig>): MiBotConfig {
   if (typeof raw.consentMessage === 'string') out.consentMessage = raw.consentMessage;
   if (typeof raw.consentStopKeyword === 'string' && raw.consentStopKeyword.trim() !== '') out.consentStopKeyword = raw.consentStopKeyword.trim();
   if (typeof raw.botNameSuffix === 'string') out.botNameSuffix = raw.botNameSuffix;
+  // notify: an object; each field validated on its own, falling back to its default.
+  out.notify = { ...DEFAULTS.notify };
+  if (raw.notify && typeof raw.notify === 'object' && !Array.isArray(raw.notify)) {
+    const n = raw.notify as Record<string, unknown>;
+    if (typeof n.folder === 'string' && n.folder.trim() !== '') out.notify.folder = n.folder.trim();
+    if (n.digest === 'each' || n.digest === 'off') out.notify.digest = n.digest;
+    if (typeof n.alerts === 'boolean') out.notify.alerts = n.alerts;
+  }
 
   // numeric fields: must be finite integers within range.
   for (const [field, [min, max]] of Object.entries(NUMERIC_RANGES)) {

@@ -4,6 +4,7 @@ import {
 } from './db.js';
 import { transcribe as realTranscribe } from './transcribe.js';
 import { RECORDING_STATUS, type RecordingStatus } from './status.js';
+import { noteTranscriptionOutcome } from './notify.js';
 
 /**
  * Wave 9-B: resume a transcription that a crash interrupted.
@@ -29,6 +30,7 @@ export async function resumeTranscription(job: TranscriptionJob, deps: ResumeDep
     console.error(`[mibot] Transcription of recording ${job.recordingId} crashed ${MAX_TRANSCRIBE_ATTEMPTS} times — giving up`);
     applyRecordingStatus(job.recordingId, RECORDING_STATUS.TRANSCRIBE_FAILED);
     updateMeetingStatus(job.meetingId, 'done'); // the meeting itself completed; only transcription didn't
+    noteTranscriptionOutcome('transcribe_failed', `recording ${job.recordingId}`);
     return;
   }
   if (!fs.existsSync(job.audioPath)) {
@@ -44,6 +46,7 @@ export async function resumeTranscription(job: TranscriptionJob, deps: ResumeDep
   try {
     const outcome = await transcribe(job.recordingId, job.audioPath, job.participants, job.speakerTimeline);
     applyRecordingStatus(job.recordingId, outcome);
+    noteTranscriptionOutcome(outcome, `recording ${job.recordingId}`);
     updateMeetingStatus(job.meetingId, 'done');
   } catch (err) {
     // Leave it 'recorded'/'processing': once our heartbeat stops it goes stale and is reclaimed.

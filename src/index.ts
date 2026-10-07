@@ -16,6 +16,9 @@ import { SyncSchedule, LAUNCH_TICK_MS } from './watch-clock.js';
 import { acquireInstanceLock } from './instance-lock.js';
 import { prune, type PruneReport } from './prune.js';
 import { buildReport, formatReport } from './report.js';
+import {
+  channelFor, setAlertsEnabled, noticeAlert, raiseAlert, resolveAlert, enqueuePendingDigests, drainOutbox,
+} from './notify.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -107,8 +110,17 @@ Audio:  ~/.config/mibot/recordings/
 async function joinCommand(url: string | undefined, title?: string): Promise<void> {
   if (!url) { console.error('Usage: mibot join <meeting-url>'); process.exit(1); }
   if (!detectPlatform(url)) { console.error('Unsupported URL. Supported: Zoom, Teams, Google Meet'); process.exit(1); }
-  const id = await joinAndRecord({ url, title });
-  console.log(`Recording ${id} complete.`);
+  try {
+    const id = await joinAndRecord({ url, title });
+    console.log(`Recording ${id} complete.`);
+  } finally {
+    // Wave 10 #3: a manual join gets its note too (the watcher may not be running).
+    const config = loadConfig();
+    try {
+      enqueuePendingDigests({ timezone: config.timezone, write: config.notify.digest === 'each' });
+      await drainOutbox(channelFor(config.notify));
+    } catch { /* the watcher will deliver it later */ }
+  }
 }
 
 function showMeetings(): void {
@@ -288,9 +300,15 @@ async function startWatcher(): Promise<void> {
   const config = loadConfig();
 
   // Recover meetings stuck from previous crashes
+  // Wave 10 #3/#4: notes folder + alerts.
+  setAlertsEnabled(config.notify.alerts);
+  const channel = channelFor(config.notify);
+
   const recovered = recoverStaleMeetings();
   if (recovered > 0) {
     console.error(`[mibot] Recovered ${recovered} stale meeting(s) from previous crash`);
+    noticeAlert('watcher-restart', 'MiBot restarted after a crash',
+      `${recovered} meeting(s) were in progress and have been marked crashed; their notes explain what was lost.`);
   }
 
   console.error(`[mibot] Configuration:`);
@@ -314,6 +332,7 @@ async function startWatcher(): Promise<void> {
   let resumingTranscriptions = false;
   const skipLogged = new Set<number>();
   let lastPruneAt = 0;
+  const syncFailures = new Map<string, number>();
   const poll = async () => {
     if (polling) { console.error('[mibot] Poll still running, skipping this tick'); return; }
     polling = true;
@@ -324,7 +343,17 @@ async function startWatcher(): Promise<void> {
       const now = Date.now();
       if (syncSchedule.due(now)) {
         syncSchedule.markSynced(now);
-        try { await syncCalendar(); } catch (err) { console.error(`[mibot] Calendar sync error: ${(err as Error).message}`); }
+        try {
+          await syncCalendar((provider, err) => {
+            // Wave 10 #4: 3 failures in a row is almost always an expired login.
+            const key = `calendar:${provider}`;
+            if (!err) { syncFailures.set(provider, 0); resolveAlert(key, `${provider} calendar sync is working again.`); return; }
+            const n = (syncFailures.get(provider) ?? 0) + 1;
+            syncFailures.set(provider, n);
+            if (n >= 3) raiseAlert(key, `${provider === 'm365' ? 'Microsoft 365' : 'Google'} calendar sync failing`,
+              `${n} syncs in a row failed (${err.message.split('\n')[0].slice(0, 160)}). Usually an expired login — new meetings are not being picked up.`);
+          });
+        } catch (err) { console.error(`[mibot] Calendar sync error: ${(err as Error).message}`); }
       }
 
       // D7: retire meetings whose window lapsed while the watcher was down (else they
@@ -376,6 +405,12 @@ async function startWatcher(): Promise<void> {
           if (total > 0) console.error(`[mibot] Retention: removed ${r.logs.length} log(s), ${r.audio.length} audio file(s), ${r.screenshotDirs.length} screenshot folder(s), ${r.meetingRows} row(s) (${(r.bytes / 1024 / 1024).toFixed(1)} MB)`);
         } catch (err) { console.error(`[mibot] Retention pass failed: ${(err as Error).message}`); }
       }
+
+      // Wave 10 #3: a note for every meeting that became final, then deliver whatever is due.
+      try {
+        enqueuePendingDigests({ timezone: config.timezone, write: config.notify.digest === 'each' });
+        await drainOutbox(channel);
+      } catch (err) { console.error(`[mibot] Notes: ${(err as Error).message}`); }
 
       const upcoming = getUpcomingMeetings(config.joinBeforeMinutes + 1);
       const prioritized = prioritizeMeetings(upcoming);

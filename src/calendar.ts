@@ -420,24 +420,31 @@ export function reconcileProvider(prefix: string, meetings: NormalizedMeeting[],
 }
 
 /** Fetch upcoming calendar events from all configured providers and sync to local db. */
-export async function syncCalendar(): Promise<Meeting[]> {
+export async function syncCalendar(
+  /** Wave 10 #4: per-provider outcome (null = ok), for the consecutive-failure alert. */
+  onResult?: (provider: 'm365' | 'google', err: Error | null) => void,
+): Promise<Meeting[]> {
   const newMeetings: Meeting[] = [];
 
   // 1. Try M365 sync (if MS365_CLI_CLIENT_ID is configured)
   if (process.env.MS365_CLI_CLIENT_ID) {
     try {
       newMeetings.push(...(await syncM365Calendar()));
+      onResult?.('m365', null);
     } catch (err) {
       const stderr = (err as any).stderr || '';
       console.error(`[mibot] M365 calendar sync failed: ${(err as Error).message}${stderr ? '\n' + stderr : ''}`);
+      onResult?.('m365', err as Error);
     }
   }
 
   // 2. Try Google Calendar sync (via gwscli)
   try {
     newMeetings.push(...(await syncGoogleCalendar()));
+    onResult?.('google', null);
   } catch (err) {
     console.error(`[mibot] Google Calendar sync failed: ${(err as Error).message}`);
+    onResult?.('google', err as Error);
   }
 
   return newMeetings;
